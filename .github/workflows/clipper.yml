@@ -1,4 +1,4 @@
-name: Ultimate Viral Random Clipper
+name: Ultimate Viral Master Clipper
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -10,13 +10,14 @@ jobs:
       - name: Install All Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg bc
+          sudo apt-get install -y ffmpeg bc fonts-liberation
           pip install gdown openai-whisper
 
-      - name: Download Viral Font
+      - name: Download Bebas Neue Bold Font
         run: |
-          mkdir -p ~/.local/share/fonts
-          wget -O ~/.local/share/fonts/TheBoldFont.ttf https://github.com/google/fonts/raw/main/apache/robotocondensed/RobotoCondensed-Bold.ttf
+          mkdir -p ~/.fonts
+          # Stable link to Bebas Neue Bold
+          wget -O ~/.fonts/BebasNeue-Bold.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf"
           fc-cache -f -v
 
       - name: Download Video
@@ -25,32 +26,41 @@ jobs:
       - name: Pick Random Start Time
         id: randomizer
         run: |
-          # Calculate duration and pick a random start point
+          # Get video duration
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 input.mp4)
-          # We want a 58-second clip, so max start is Duration - 60
-          MAX_START=$(echo "$DURATION - 60" | bc)
-          # Generate random number
-          START_TIME=$(shuf -i 0-$(printf "%.0f" $MAX_START) -n 1)
+          DUR_INT=$(printf "%.0f" $DURATION)
+          # We want a 58s clip, so we need at least 65s of video
+          if [ "$DUR_INT" -gt "65" ]; then
+            MAX_START=$(($DUR_INT - 65))
+            START_TIME=$(shuf -i 0-$MAX_START -n 1)
+          else
+            START_TIME=0
+          fi
           echo "START_AT=$START_TIME" >> $GITHUB_ENV
-          echo "Picked start time: $START_TIME"
+          echo "Picked random start: $START_TIME"
 
-      - name: AI Listening (Creating Captions)
-        run: whisper input.mp4 --model base --output_format srt --max_words_per_line 2 --word_timestamps True
+      - name: AI Listening (1-Word Pop Effect)
+        # --max_words_per_line 1 makes words appear one-by-one for maximum engagement
+        run: whisper input.mp4 --model base --output_format srt --max_words_per_line 1 --word_timestamps True
 
-      - name: Process Video
+      - name: Process Final Video
         env:
           VIDEO_TITLE: ${{ github.event.client_payload.video_title }}
         run: |
+          # STYLE SETTINGS:
+          # MarginV=110: Sets it slightly above the bottom (Reels/TikTok safe zone)
+          # PrimaryColour=&H00FFFF: Bright Viral Yellow
+          # FontSize=38: Massive and Bold
           ffmpeg -ss ${{ env.START_AT }} -t 58 -i input.mp4 -vf "
           crop=ih*(9/16):ih,
           scale=1080:1920,
-          drawbox=y=0:color=black@0.5:width=iw:height=180:t=fill,
-          drawtext=text='$VIDEO_TITLE':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=60,
-          subtitles=input.srt:force_style='FontName=Roboto Condensed,FontSize=28,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=120'
+          drawbox=y=0:color=black@0.4:width=iw:height=160:t=fill,
+          drawtext=text='$VIDEO_TITLE':fontcolor=white:fontsize=70:x=(w-text_w)/2:y=50:fontfile=/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf,
+          subtitles=input.srt:force_style='FontName=Bebas Neue,FontSize=38,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=110'
           " -c:v libx264 -crf 18 -c:a aac output.mp4
 
-      - name: Upload Finished Video
+      - name: Upload Viral Short
         uses: actions/upload-artifact@v4
         with:
-          name: viral-random-short
+          name: master-viral-short
           path: output.mp4
