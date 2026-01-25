@@ -10,19 +10,20 @@ jobs:
       - name: Setup FFmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
 
-      - name: Install AI and Download Tools
+      - name: Install Tools
         run: |
           pip install gdown openai-whisper
           sudo apt-get install -y fonts-liberation
 
-      - name: Download Video from Google Drive
-        # This line is now in "GitHub Language"
-        run: gdown ${{ github.event.client_payload.file_id }} -O input.mp4
+      - name: Download Video
+        # DO NOT CHANGE THIS LINE. This is the special GitHub code.
+        run: |
+          gdown --fuzzy ${{ github.event.client_payload.file_id }} -O input.mp4
 
-      - name: AI Listening (Creating Pop-up Captions)
+      - name: AI Listening
         run: whisper input.mp4 --model base --output_format srt --max_words_per_line 3
 
-      - name: Final Video Processing
+      - name: Process Video
         run: |
           ffmpeg -i input.mp4 -t 58 -vf "
           crop=ih*(9/16):ih,
