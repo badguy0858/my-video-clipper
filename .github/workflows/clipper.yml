@@ -1,4 +1,4 @@
-name: AI Pro Viral Clipper
+name: Klap AI Style Clipper
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -7,77 +7,72 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install AI & Pro Tools
+      - name: Install All Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg bc fonts-liberation
           pip install gdown openai-whisper
           mkdir -p ~/.fonts
-          wget -O ~/.fonts/BebasNeue-Bold.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
+          wget -O ~/.fonts/BebasNeue.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
           fc-cache -f -v
 
       - name: Download Video
         run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O raw_input.mp4
 
-      - name: AI Smart Highlight & Precise Cut
+      - name: AI Smart Cut
         run: |
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
           DUR_INT=$(printf "%.0f" $DURATION)
-          if [ "$DUR_INT" -gt "70" ]; then
-            MAX_START=$(($DUR_INT - 65))
-            START_TIME=$(shuf -i 10-$MAX_START -n 1)
-          else
-            START_TIME=0
-          fi
+          START_TIME=$(shuf -i 10-$(($DUR_INT - 65)) -n 1)
           ffmpeg -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-      - name: AI Transcription
+      - name: AI Klap-Style Transcription
         shell: python
         run: |
           import whisper
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
-          with open("pro_subs.srt", "w", encoding="utf-8") as f:
+          
+          # This creates the "Active Word Highlight" (White -> Yellow)
+          with open("klap_subs.srt", "w", encoding="utf-8") as f:
               counter = 1
               for segment in result['segments']:
                   words = segment['words']
                   for i in range(len(words)):
                       start = words[i]['start']
                       end = words[i]['end']
-                      text_chunk = " ".join([w['word'].strip().upper() for w in words[max(0, i-2):i+1]])
-                      emoji = ""
-                      text_upper = text_chunk.upper()
-                      if any(x in text_upper for x in ["MONEY", "CASH", "RICH"]): emoji = "💰"
-                      if any(x in text_upper for x in ["FIRE", "HOT", "CRAZY"]): emoji = "🔥"
-                      if any(x in text_upper for x in ["CAR", "FAST", "DRIVE"]): emoji = "🏎️"
-                      f.write(f"{counter}\n00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + f"\n{text_chunk} {emoji}\n\n")
+                      # The word currently being spoken is colored Yellow (&H00FFFF)
+                      # The words before and after are White (&HFFFFFF)
+                      before = " ".join([w['word'].strip().upper() for w in words[max(0, i-1):i]])
+                      current = words[i]['word'].strip().upper()
+                      after = " ".join([w['word'].strip().upper() for w in words[i+1:min(len(words), i+2)]])
+                      
+                      styled_text = f"{before} <font color=\"#FFFF00\">{current}</font> {after}"
+                      
+                      f.write(f"{counter}\n00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + f"\n{styled_text}\n\n")
                       counter += 1
 
       - name: Final Pro Render
         run: |
+          # Removed drawbox (top bar) and drawtext (wait for end)
+          # Increased MarginV for perfect middle-bottom position
           ffmpeg -i input_clip.mp4 -vf "
           crop=ih*(9/16):ih,
           scale=1080:1920,
           zoompan=z='min(zoom+0.0015,1.5)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,
-          drawbox=y=0:color=black@0.6:width=iw:height=220:t=fill,
-          drawtext=text='WAIT FOR THE END 😱':fontcolor=white:fontsize=85:fontfile='~/.fonts/BebasNeue-Bold.ttf':x=(w-text_w)/2:y=65,
-          subtitles=pro_subs.srt:force_style='FontName=Bebas Neue,FontSize=38,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Alignment=2,MarginV=180',
-          drawbox=x=0:y=ih-20:w=iw*t/58:h=20:color=yellow@1:t=fill
+          subtitles=klap_subs.srt:force_style='FontName=Bebas Neue,FontSize=32,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=280'
           " -c:v libx264 -crf 18 -c:a aac output.mp4
 
       - name: Notify n8n
-        # Added a check so it doesn't crash if the URL is missing
         run: |
           if [ -n "${{ github.event.client_payload.n8n_url }}" ]; then
             curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
             -H "Content-Type: application/json" \
             -d '{"status": "completed", "file_name": "${{ github.event.client_payload.video_title }}", "run_id": "${{ github.run_id }}"}'
-          else
-            echo "No Webhook URL provided, skipping notification."
           fi
 
       - name: Upload Final Video
         uses: actions/upload-artifact@v4
         with:
-          name: AI-PRO-VIDEO
+          name: KLAP-STYLE-VIDEO
           path: output.mp4
