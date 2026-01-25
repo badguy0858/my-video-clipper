@@ -39,7 +39,6 @@ jobs:
         run: |
           import cv2
           import numpy as np
-          import subprocess
           import json
           import urllib.request
 
@@ -70,7 +69,7 @@ jobs:
           if target_width > width:
               target_width = width
 
-          # Sample frames for face positions (every 30 frames)
+          # Sample frames for face positions (every 20 frames)
           face_positions = []
           frame_idx = 0
 
@@ -79,42 +78,47 @@ jobs:
               if not ret:
                   break
               
-              if frame_idx % 30 == 0:
+              if frame_idx % 20 == 0:
                   # Prepare blob for DNN
                   blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104.0, 177.0, 123.0))
                   net.setInput(blob)
                   detections = net.forward()
                   
-                  best_confidence = 0
-                  best_center_x = width / 2
+                  # Find the LARGEST face (most prominent speaker)
+                  best_area = 0
+                  best_center_x = None
                   
                   for i in range(detections.shape[2]):
                       confidence = detections[0, 0, i, 2]
-                      if confidence > 0.5 and confidence > best_confidence:
-                          best_confidence = confidence
+                      if confidence > 0.6:
                           box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
                           x1, y1, x2, y2 = box.astype("int")
-                          best_center_x = (x1 + x2) / 2
+                          area = (x2 - x1) * (y2 - y1)
+                          if area > best_area:
+                              best_area = area
+                              best_center_x = (x1 + x2) / 2
                   
-                  face_positions.append(best_center_x)
-                  if frame_idx % 150 == 0:
-                      print(f"Frame {frame_idx}: face at x={best_center_x:.0f}")
+                  if best_center_x is not None:
+                      face_positions.append(best_center_x)
+                      print(f"Frame {frame_idx}: face at x={best_center_x:.0f}, area={best_area}")
               
               frame_idx += 1
 
           cap.release()
 
-          # Calculate smooth average position
+          # Calculate average position (only from frames where face was detected)
           if face_positions:
               avg_face_x = int(np.median(face_positions))
+              print(f"Detected {len(face_positions)} face positions, median X: {avg_face_x}")
           else:
               avg_face_x = width // 2
+              print("No faces detected, defaulting to center")
 
-          # Calculate crop X position (keep face centered)
+          # Calculate crop X position (keep face centered in frame)
           crop_x = avg_face_x - (target_width // 2)
           crop_x = max(0, min(crop_x, width - target_width))
 
-          print(f"Face center: {avg_face_x}, Crop X: {crop_x}, Target width: {target_width}")
+          print(f"Final crop: X={crop_x}, Width={target_width}, Height={height}")
 
           # Save crop parameters
           with open('crop_params.json', 'w') as f:
@@ -124,6 +128,8 @@ jobs:
                   'original_width': width,
                   'original_height': height
               }, f)
+          
+          print("Face tracking complete!")
 
       - name: AI Transcription with Word Timestamps
         shell: python
@@ -164,8 +170,8 @@ jobs:
 
           [V4+ Styles]
           Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-          Style: Default,Bebas Neue,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,40,40,180,1
-          Style: Highlight,Bebas Neue,78,&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,105,105,0,0,1,4,2,2,40,40,180,1
+          Style: Default,Bebas Neue,110,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,5,3,2,40,40,350,1
+          Style: Highlight,Bebas Neue,115,&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,105,105,0,0,1,5,3,2,40,40,350,1
 
           [Events]
           Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -238,7 +244,6 @@ jobs:
           ffmpeg -y -i input_clip.mp4 -vf "
             crop=${CROP_W}:${ORIG_H}:${CROP_X}:0,
             scale=1080:1920,
-            zoompan=z='min(zoom+0.001,1.3)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30,
             ass=captions.ass
           " -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -r 30 output.mp4
           
