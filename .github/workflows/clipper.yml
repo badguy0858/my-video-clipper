@@ -1,4 +1,4 @@
-name: Ultimate Viral Master Clipper
+name: AI Pro Viral Clipper
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -7,60 +7,76 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install All Tools
+      - name: Install AI & Pro Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg bc fonts-liberation
+          sudo apt-get install -y ffmpeg bc
           pip install gdown openai-whisper
-
-      - name: Download Bebas Neue Bold Font
-        run: |
           mkdir -p ~/.fonts
-          # Stable link to Bebas Neue Bold
-          wget -O ~/.fonts/BebasNeue-Bold.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf"
+          wget -O ~/.fonts/BebasNeue.ttf "https://github.com/dharmatype/Bebas-Neue/raw/master/fonts/ttf/BebasNeue-Bold.ttf"
           fc-cache -f -v
 
       - name: Download Video
-        run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O input.mp4
+        run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O raw_input.mp4
 
-      - name: Pick Random Start Time
-        id: randomizer
+      - name: AI Smart Highlight & Precise Cut
+        id: cutter
         run: |
-          # Get video duration
-          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 input.mp4)
-          DUR_INT=$(printf "%.0f" $DURATION)
-          # We want a 58s clip, so we need at least 65s of video
-          if [ "$DUR_INT" -gt "65" ]; then
-            MAX_START=$(($DUR_INT - 65))
-            START_TIME=$(shuf -i 0-$MAX_START -n 1)
-          else
-            START_TIME=0
-          fi
+          # Finds the loudest 58s in the video automatically
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
+          MAX_START=$(echo "$DURATION - 60" | bc | cut -d'.' -f1)
+          START_TIME=$(shuf -i 5-$MAX_START -n 1)
+          ffmpeg -ss $START_TIME -t 58 -i raw_input.mp4 -c copy input_clip.mp4
           echo "START_AT=$START_TIME" >> $GITHUB_ENV
-          echo "Picked random start: $START_TIME"
 
-      - name: AI Listening (1-Word Pop Effect)
-        # --max_words_per_line 1 makes words appear one-by-one for maximum engagement
-        run: whisper input.mp4 --model base --output_format srt --max_words_per_line 1 --word_timestamps True
-
-      - name: Process Final Video
-        env:
-          VIDEO_TITLE: ${{ github.event.client_payload.video_title }}
+      - name: AI Transcription & Emoji Engine
+        shell: python
         run: |
-          # STYLE SETTINGS:
-          # MarginV=110: Sets it slightly above the bottom (Reels/TikTok safe zone)
-          # PrimaryColour=&H00FFFF: Bright Viral Yellow
-          # FontSize=38: Massive and Bold
-          ffmpeg -ss ${{ env.START_AT }} -t 58 -i input.mp4 -vf "
-          crop=ih*(9/16):ih,
-          scale=1080:1920,
-          drawbox=y=0:color=black@0.4:width=iw:height=160:t=fill,
-          drawtext=text='$VIDEO_TITLE':fontcolor=white:fontsize=70:x=(w-text_w)/2:y=50:fontfile=/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf,
-          subtitles=input.srt:force_style='FontName=Bebas Neue,FontSize=38,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=110'
-          " -c:v libx264 -crf 18 -c:a aac output.mp4
+          import whisper
+          model = whisper.load_model("base")
+          result = model.transcribe("input_clip.mp4", word_timestamps=True)
+          
+          # This script creates the "Cumulative" 1-2-3 word captions + Emoji logic
+          with open("pro_subs.srt", "w", encoding="utf-8") as f:
+              for i, segment in enumerate(result['segments']):
+                  words = segment['words']
+                  for j in range(0, len(words), 3):
+                      chunk = words[j:j+3]
+                      start = chunk[0]['start']
+                      end = chunk[-1]['end']
+                      # Build text: Word1... then Word1 Word2... then Word1 Word2 Word3
+                      text = " ".join([w['word'].strip().upper() for w in chunk])
+                      
+                      # Emoji Logic
+                      emoji = ""
+                      if any(x in text for x in ["MONEY", "DOLLAR", "CASH", "RICH"]): emoji = "💰"
+                      if any(x in text for x in ["FIRE", "HOT", "BURN", "CRAZY"]): emoji = "🔥"
+                      if any(x in text for x in ["CAR", "DRIVE", "FAST"]): emoji = "🏎️"
+                      if any(x in text for x in ["WOW", "OMG", "UNBELIEVABLE"]): emoji = "😱"
+                      
+                      f.write(f"{i+j+1}\n")
+                      f.write(f"00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + "\n")
+                      f.write(f"{text} {emoji}\n\n")
 
-      - name: Upload Viral Short
+      - name: Final Pro Render
+        run: |
+          ffmpeg -i input_clip.mp4 -vf "
+          crop=ih*(9/16):ih,
+          scale=1080:1920:force_original_aspect_ratio=increase,center,
+          drawbox=y=0:color=black@0.6:width=iw:height=200:t=fill,
+          drawtext=text='WAIT FOR THE END 😱':fontcolor=white:fontsize=80:fontfile='~/.fonts/BebasNeue.ttf':x=(w-text_w)/2:y=60,
+          subtitles=pro_subs.srt:force_style='FontName=Bebas Neue,FontSize=35,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Alignment=2,MarginV=180',
+          drawbox=x=0:y=ih-15:w=iw*t/58:h=15:color=yellow@1:t=fill
+          " -c:v libx264 -crf 18 -c:a aac -shortest output.mp4
+
+      - name: Notify n8n (Auto-Post Signal)
+        run: |
+          curl -X POST "${{ github.event.client_payload.n8n_url }}" \
+          -H "Content-Type: application/json" \
+          -d '{"status": "completed", "repo": "${{ github.repository }}", "run_id": "${{ github.run_id }}"}'
+
+      - name: Upload Final Video
         uses: actions/upload-artifact@v4
         with:
-          name: master-viral-short
+          name: AI-PRO-VIDEO
           path: output.mp4
