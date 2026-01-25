@@ -1,4 +1,4 @@
-name: Video Clipper
+name: Video Clipper with Captions
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -10,17 +10,24 @@ jobs:
       - name: Setup FFmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
 
-      - name: Install Download Tool
-        run: pip install gdown
+      - name: Install AI & Tools
+        run: |
+          pip install gdown openai-whisper
+          sudo apt-get install -y fonts-liberation
 
       - name: Download Video
         run: gdown ${{ github.event.client_payload.file_id }} -O input.mp4
 
-      - name: Process to Short
-        run: ffmpeg -i input.mp4 -t 58 -vf "crop=ih*(9/16):ih,scale=1080:1920" -c:v libx264 -crf 23 -c:a aac output.mp4
+      - name: AI Creating Captions
+        run: whisper input.mp4 --model base --output_format srt --output_dir .
+
+      - name: Process Video + Burn Captions
+        run: |
+          # This command crops to 9:16 AND adds the subtitles in the center
+          ffmpeg -i input.mp4 -t 58 -vf "crop=ih*(9/16):ih,scale=1080:1920,subtitles=input.srt:force_style='Alignment=2,FontSize=24,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=3'" -c:v libx264 -crf 23 -c:a aac output.mp4
 
       - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: clipped-video
+          name: short-with-captions
           path: output.mp4
