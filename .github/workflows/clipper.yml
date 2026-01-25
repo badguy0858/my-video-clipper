@@ -19,21 +19,15 @@ jobs:
         run: gdown ${{ github.event.client_payload.file_id }} -O input.mp4
 
       - name: AI Listening (Creating Pop-up Captions)
-        # This creates the "Fast" look by limiting to 3 words per line
         run: whisper input.mp4 --model base --output_format srt --max_words_per_line 3
 
       - name: Final Video Processing
         run: |
-          # FFmpeg Command Breakdown:
-          # 1. Crop to center 9:16
-          # 2. Scale to 1080x1920
-          # 3. Add Top Hook Background & Text (Video Title)
-          # 4. Burn White Captions with Black Outline
           ffmpeg -i input.mp4 -t 58 -vf "
           crop=ih*(9/16):ih,
           scale=1080:1920,
           drawbox=y=0:color=black@0.6:width=iw:height=220:t=fill,
-          drawtext=text='${{ github.event.client_payload.video_title }}':fontcolor=white:fontsize=75:x=(w-text_w)/2:y=70:fontfile=/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf,
+          drawtext=text='${{ github.event.client_payload.video_title }}':fontcolor=white:fontsize=75:x=(w-text_w)/2:y=70,
           subtitles=input.srt:force_style='FontName=Liberation Sans,FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=200'
           " -c:v libx264 -crf 18 -c:a aac output.mp4
 
