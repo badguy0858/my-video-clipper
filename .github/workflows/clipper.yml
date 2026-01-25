@@ -16,11 +16,11 @@ jobs:
           sudo apt-get install -y fonts-liberation
 
       - name: Download Video
-        # FIXED LINE BELOW: This tells GitHub to grab the ID sent by n8n
         run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O input.mp4
 
       - name: AI Listening
-        run: whisper input.mp4 --model base --output_format srt --max_words_per_line 3
+        # ADDED --word_timestamps True TO FIX THE ERROR
+        run: whisper input.mp4 --model base --output_format srt --max_words_per_line 3 --word_timestamps True
 
       - name: Process Video
         run: |
