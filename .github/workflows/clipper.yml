@@ -13,7 +13,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg bc
-          pip install gdown openai-whisper opencv-python-headless mediapipe numpy
+          pip install gdown openai-whisper opencv-python-headless numpy
 
       - name: Download Fonts
         run: |
@@ -38,14 +38,24 @@ jobs:
         shell: python
         run: |
           import cv2
-          import mediapipe as mp
           import numpy as np
           import subprocess
           import json
+          import urllib.request
 
-          # Initialize MediaPipe Face Detection
-          mp_face = mp.solutions.face_detection
-          face_detection = mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+          # Download OpenCV's DNN face detector model
+          print("Downloading face detection model...")
+          urllib.request.urlretrieve(
+              "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt",
+              "deploy.prototxt"
+          )
+          urllib.request.urlretrieve(
+              "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
+              "face_model.caffemodel"
+          )
+
+          # Load the DNN face detector
+          net = cv2.dnn.readNetFromCaffe("deploy.prototxt", "face_model.caffemodel")
 
           cap = cv2.VideoCapture('input_clip.mp4')
           width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -53,12 +63,14 @@ jobs:
           fps = cap.get(cv2.CAP_PROP_FPS)
           total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+          print(f"Video: {width}x{height}, {fps}fps, {total_frames} frames")
+
           # Target 9:16 aspect ratio
           target_width = int(height * 9 / 16)
           if target_width > width:
               target_width = width
 
-          # Sample frames for face positions (every 15 frames)
+          # Sample frames for face positions (every 30 frames)
           face_positions = []
           frame_idx = 0
 
@@ -67,25 +79,32 @@ jobs:
               if not ret:
                   break
               
-              if frame_idx % 15 == 0:
-                  rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                  results = face_detection.process(rgb_frame)
+              if frame_idx % 30 == 0:
+                  # Prepare blob for DNN
+                  blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104.0, 177.0, 123.0))
+                  net.setInput(blob)
+                  detections = net.forward()
                   
-                  if results.detections:
-                      # Get the most prominent face
-                      detection = results.detections[0]
-                      bbox = detection.location_data.relative_bounding_box
-                      face_center_x = (bbox.xmin + bbox.width / 2) * width
-                      face_positions.append(face_center_x)
-                  else:
-                      face_positions.append(width / 2)  # Default to center
+                  best_confidence = 0
+                  best_center_x = width / 2
+                  
+                  for i in range(detections.shape[2]):
+                      confidence = detections[0, 0, i, 2]
+                      if confidence > 0.5 and confidence > best_confidence:
+                          best_confidence = confidence
+                          box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
+                          x1, y1, x2, y2 = box.astype("int")
+                          best_center_x = (x1 + x2) / 2
+                  
+                  face_positions.append(best_center_x)
+                  if frame_idx % 150 == 0:
+                      print(f"Frame {frame_idx}: face at x={best_center_x:.0f}")
               
               frame_idx += 1
 
           cap.release()
-          face_detection.close()
 
-          # Calculate smooth average position (weighted toward detected faces)
+          # Calculate smooth average position
           if face_positions:
               avg_face_x = int(np.median(face_positions))
           else:
