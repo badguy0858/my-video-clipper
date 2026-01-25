@@ -1,4 +1,4 @@
-name: Ultimate Viral Video Clipper
+name: Ultimate Viral Random Clipper
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -10,24 +10,47 @@ jobs:
       - name: Install All Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-liberation
+          sudo apt-get install -y ffmpeg bc
           pip install gdown openai-whisper
+
+      - name: Download Viral Font
+        run: |
+          mkdir -p ~/.local/share/fonts
+          wget -O ~/.local/share/fonts/TheBoldFont.ttf https://github.com/google/fonts/raw/main/apache/robotocondensed/RobotoCondensed-Bold.ttf
+          fc-cache -f -v
 
       - name: Download Video
         run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O input.mp4
 
+      - name: Pick Random Start Time
+        id: randomizer
+        run: |
+          # Calculate duration and pick a random start point
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 input.mp4)
+          # We want a 58-second clip, so max start is Duration - 60
+          MAX_START=$(echo "$DURATION - 60" | bc)
+          # Generate random number
+          START_TIME=$(shuf -i 0-$(printf "%.0f" $MAX_START) -n 1)
+          echo "START_AT=$START_TIME" >> $GITHUB_ENV
+          echo "Picked start time: $START_TIME"
+
       - name: AI Listening (Creating Captions)
-        run: whisper input.mp4 --model base --output_format srt --max_words_per_line 3 --word_timestamps True
+        run: whisper input.mp4 --model base --output_format srt --max_words_per_line 2 --word_timestamps True
 
       - name: Process Video
         env:
-          # This protects the $ and ! signs in MrBeast titles
           VIDEO_TITLE: ${{ github.event.client_payload.video_title }}
         run: |
-          ffmpeg -i input.mp4 -t 58 -vf "crop=ih*(9/16):ih,scale=1080:1920,drawbox=y=0:color=black@0.6:width=iw:height=220:t=fill,drawtext=text='$VIDEO_TITLE':fontcolor=white:fontsize=75:x=(w-text_w)/2:y=70:fontfile=/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf,subtitles=input.srt:force_style='FontName=Liberation Sans,FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=200'" -c:v libx264 -crf 18 -c:a aac output.mp4
+          ffmpeg -ss ${{ env.START_AT }} -t 58 -i input.mp4 -vf "
+          crop=ih*(9/16):ih,
+          scale=1080:1920,
+          drawbox=y=0:color=black@0.5:width=iw:height=180:t=fill,
+          drawtext=text='$VIDEO_TITLE':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=60,
+          subtitles=input.srt:force_style='FontName=Roboto Condensed,FontSize=28,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=120'
+          " -c:v libx264 -crf 18 -c:a aac output.mp4
 
       - name: Upload Finished Video
         uses: actions/upload-artifact@v4
         with:
-          name: final-viral-short
+          name: viral-random-short
           path: output.mp4
