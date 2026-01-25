@@ -7,6 +7,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Setup FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+
       - name: Download
         run: curl -L "https://drive.google.com/uc?export=download&id=${{ github.event.client_payload.file_id }}" -o input.mp4
 
