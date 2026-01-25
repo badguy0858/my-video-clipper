@@ -1,4 +1,5 @@
-name: Klap AI Style Clipper
+name: Klap AI Clipper with Face Tracking
+
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -6,73 +7,239 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Install All Tools
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg bc fonts-liberation
-          pip install gdown openai-whisper
+          sudo apt-get install -y ffmpeg bc
+          pip install gdown openai-whisper opencv-python-headless mediapipe numpy
+
+      - name: Download Fonts
+        run: |
           mkdir -p ~/.fonts
-          wget -O ~/.fonts/BebasNeue.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
+          wget -q -O ~/.fonts/BebasNeue-Regular.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
           fc-cache -f -v
 
-      - name: Download Video
-        run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O raw_input.mp4
+      - name: Download Video from Drive
+        run: gdown --fuzzy "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
 
-      - name: AI Smart Cut
+      - name: Extract Random Clip
         run: |
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
-          DUR_INT=$(printf "%.0f" $DURATION)
-          START_TIME=$(shuf -i 10-$(($DUR_INT - 65)) -n 1)
-          ffmpeg -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
+          DUR_INT=$(printf "%.0f" "$DURATION")
+          MAX_START=$((DUR_INT - 65))
+          if [ "$MAX_START" -lt 10 ]; then MAX_START=10; fi
+          START_TIME=$(shuf -i 10-${MAX_START} -n 1)
+          echo "Cutting from ${START_TIME}s"
+          ffmpeg -y -ss "$START_TIME" -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-      - name: AI Klap-Style Transcription
+      - name: Face Detection & Smart Crop
+        shell: python
+        run: |
+          import cv2
+          import mediapipe as mp
+          import numpy as np
+          import subprocess
+          import json
+
+          # Initialize MediaPipe Face Detection
+          mp_face = mp.solutions.face_detection
+          face_detection = mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+
+          cap = cv2.VideoCapture('input_clip.mp4')
+          width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+          height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+          fps = cap.get(cv2.CAP_PROP_FPS)
+          total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+          # Target 9:16 aspect ratio
+          target_width = int(height * 9 / 16)
+          if target_width > width:
+              target_width = width
+
+          # Sample frames for face positions (every 15 frames)
+          face_positions = []
+          frame_idx = 0
+
+          while cap.isOpened():
+              ret, frame = cap.read()
+              if not ret:
+                  break
+              
+              if frame_idx % 15 == 0:
+                  rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                  results = face_detection.process(rgb_frame)
+                  
+                  if results.detections:
+                      # Get the most prominent face
+                      detection = results.detections[0]
+                      bbox = detection.location_data.relative_bounding_box
+                      face_center_x = (bbox.xmin + bbox.width / 2) * width
+                      face_positions.append(face_center_x)
+                  else:
+                      face_positions.append(width / 2)  # Default to center
+              
+              frame_idx += 1
+
+          cap.release()
+          face_detection.close()
+
+          # Calculate smooth average position (weighted toward detected faces)
+          if face_positions:
+              avg_face_x = int(np.median(face_positions))
+          else:
+              avg_face_x = width // 2
+
+          # Calculate crop X position (keep face centered)
+          crop_x = avg_face_x - (target_width // 2)
+          crop_x = max(0, min(crop_x, width - target_width))
+
+          print(f"Face center: {avg_face_x}, Crop X: {crop_x}, Target width: {target_width}")
+
+          # Save crop parameters
+          with open('crop_params.json', 'w') as f:
+              json.dump({
+                  'crop_x': crop_x,
+                  'crop_width': target_width,
+                  'original_width': width,
+                  'original_height': height
+              }, f)
+
+      - name: AI Transcription with Word Timestamps
         shell: python
         run: |
           import whisper
+          import json
+
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
+
+          # Save transcription for caption generation
+          with open('transcription.json', 'w') as f:
+              json.dump(result, f)
+
+      - name: Generate Klap-Style Animated Captions (ASS)
+        shell: python
+        run: |
+          import json
+
+          with open('transcription.json', 'r') as f:
+              result = json.load(f)
+
+          def format_ass_time(seconds):
+              """Convert seconds to ASS timestamp format (H:MM:SS.cc)"""
+              h = int(seconds // 3600)
+              m = int((seconds % 3600) // 60)
+              s = seconds % 60
+              return f"{h}:{m:02d}:{s:05.2f}"
+
+          # ASS Header with styles
+          ass_content = """[Script Info]
+          Title: Klap Style Captions
+          ScriptType: v4.00+
+          WrapStyle: 0
+          PlayResX: 1080
+          PlayResY: 1920
+          ScaledBorderAndShadow: yes
+
+          [V4+ Styles]
+          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+          Style: Default,Bebas Neue,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,40,40,180,1
+          Style: Highlight,Bebas Neue,78,&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,105,105,0,0,1,4,2,2,40,40,180,1
+
+          [Events]
+          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+          """
+
+          events = []
+
+          for segment in result.get('segments', []):
+              words = segment.get('words', [])
+              if not words:
+                  continue
+              
+              # Show 3-word chunks with the middle word highlighted
+              # Creates the "bouncing" active word effect
+              
+              for i, word in enumerate(words):
+                  start = word['start']
+                  end = word['end']
+                  current_word = word['word'].strip().upper()
+                  
+                  # Get context words (1 before, 1 after)
+                  before_words = []
+                  after_words = []
+                  
+                  if i > 0:
+                      before_words.append(words[i-1]['word'].strip().upper())
+                  if i < len(words) - 1:
+                      after_words.append(words[i+1]['word'].strip().upper())
+                  
+                  # Build the line with highlighted current word
+                  # Using ASS override tags for animation effect
+                  line_parts = []
+                  
+                  # Words before (white, normal size)
+                  if before_words:
+                      line_parts.append(" ".join(before_words))
+                  
+                  # Current word (yellow, slightly larger with animation)
+                  # \t tag creates smooth transition, \fscx\fscy for scale
+                  highlighted = f"{{\\c&H00FFFF&\\fscx110\\fscy110\\t(0,50,\\fscx105\\fscy105)}}{current_word}{{\\r}}"
+                  line_parts.append(highlighted)
+                  
+                  # Words after (white, normal size)
+                  if after_words:
+                      line_parts.append(" ".join(after_words))
+                  
+                  full_text = " ".join(line_parts)
+                  
+                  start_time = format_ass_time(start)
+                  end_time = format_ass_time(end)
+                  
+                  events.append(f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{full_text}")
+
+          ass_content += "\n".join(events)
+
+          with open('captions.ass', 'w', encoding='utf-8') as f:
+              f.write(ass_content)
+
+          print(f"Generated {len(events)} caption events")
+
+      - name: Final Render with Face-Centered Crop
+        run: |
+          # Read crop parameters
+          CROP_X=$(python3 -c "import json; print(json.load(open('crop_params.json'))['crop_x'])")
+          CROP_W=$(python3 -c "import json; print(json.load(open('crop_params.json'))['crop_width'])")
+          ORIG_H=$(python3 -c "import json; print(json.load(open('crop_params.json'))['original_height'])")
           
-          # This creates the "Active Word Highlight" (White -> Yellow)
-          with open("klap_subs.srt", "w", encoding="utf-8") as f:
-              counter = 1
-              for segment in result['segments']:
-                  words = segment['words']
-                  for i in range(len(words)):
-                      start = words[i]['start']
-                      end = words[i]['end']
-                      # The word currently being spoken is colored Yellow (&H00FFFF)
-                      # The words before and after are White (&HFFFFFF)
-                      before = " ".join([w['word'].strip().upper() for w in words[max(0, i-1):i]])
-                      current = words[i]['word'].strip().upper()
-                      after = " ".join([w['word'].strip().upper() for w in words[i+1:min(len(words), i+2)]])
-                      
-                      styled_text = f"{before} <font color=\"#FFFF00\">{current}</font> {after}"
-                      
-                      f.write(f"{counter}\n00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + f"\n{styled_text}\n\n")
-                      counter += 1
+          echo "Rendering with crop: x=$CROP_X, w=$CROP_W, h=$ORIG_H"
+          
+          ffmpeg -y -i input_clip.mp4 -vf "
+            crop=${CROP_W}:${ORIG_H}:${CROP_X}:0,
+            scale=1080:1920,
+            zoompan=z='min(zoom+0.001,1.3)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30,
+            ass=captions.ass
+          " -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -r 30 output.mp4
+          
+          echo "Render complete!"
+          ls -lh output.mp4
 
-      - name: Final Pro Render
+      - name: Notify n8n Webhook
+        if: ${{ github.event.client_payload.n8n_url != '' }}
         run: |
-          # Removed drawbox (top bar) and drawtext (wait for end)
-          # Increased MarginV for perfect middle-bottom position
-          ffmpeg -i input_clip.mp4 -vf "
-          crop=ih*(9/16):ih,
-          scale=1080:1920,
-          zoompan=z='min(zoom+0.0015,1.5)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,
-          subtitles=klap_subs.srt:force_style='FontName=Bebas Neue,FontSize=32,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=280'
-          " -c:v libx264 -crf 18 -c:a aac output.mp4
-
-      - name: Notify n8n
-        run: |
-          if [ -n "${{ github.event.client_payload.n8n_url }}" ]; then
-            curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
+          curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
             -H "Content-Type: application/json" \
-            -d '{"status": "completed", "file_name": "${{ github.event.client_payload.video_title }}", "run_id": "${{ github.run_id }}"}'
-          fi
+            -d '{
+              "status": "completed",
+              "file_name": "${{ github.event.client_payload.video_title }}",
+              "run_id": "${{ github.run_id }}"
+            }'
 
-      - name: Upload Final Video
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KLAP-STYLE-VIDEO
+          name: KLAP-FACE-TRACKED-VIDEO
           path: output.mp4
+          retention-days: 7
