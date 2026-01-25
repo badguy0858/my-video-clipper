@@ -13,7 +13,6 @@ jobs:
           sudo apt-get install -y ffmpeg bc fonts-liberation
           pip install gdown openai-whisper
           mkdir -p ~/.fonts
-          # FIXED FONT LINK
           wget -O ~/.fonts/BebasNeue-Bold.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
           fc-cache -f -v
 
@@ -30,10 +29,9 @@ jobs:
           else
             START_TIME=0
           fi
-          # We cut the video FIRST so the AI only listens to the 58s clip
           ffmpeg -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-      - name: AI Transcription (Cumulative Pop-up)
+      - name: AI Transcription
         shell: python
         run: |
           import whisper
@@ -43,29 +41,20 @@ jobs:
               counter = 1
               for segment in result['segments']:
                   words = segment['words']
-                  # Groups words so they build up: "I"... "I PICKED"... "I PICKED MY"...
                   for i in range(len(words)):
                       start = words[i]['start']
                       end = words[i]['end']
-                      # Show current word + next 2 if they exist for context
                       text_chunk = " ".join([w['word'].strip().upper() for w in words[max(0, i-2):i+1]])
-                      
-                      # Auto-Emoji Logic
                       emoji = ""
                       text_upper = text_chunk.upper()
                       if any(x in text_upper for x in ["MONEY", "CASH", "RICH"]): emoji = "💰"
                       if any(x in text_upper for x in ["FIRE", "HOT", "CRAZY"]): emoji = "🔥"
                       if any(x in text_upper for x in ["CAR", "FAST", "DRIVE"]): emoji = "🏎️"
-                      if any(x in text_upper for x in ["WIN", "YES", "GOAL"]): emoji = "🏆"
-                      
-                      f.write(f"{counter}\n")
-                      f.write(f"00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + "\n")
-                      f.write(f"{text_chunk} {emoji}\n\n")
+                      f.write(f"{counter}\n00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + f"\n{text_chunk} {emoji}\n\n")
                       counter += 1
 
       - name: Final Pro Render
         run: |
-          # Filters: 1. Crop 9:16, 2. Ken Burns Zoom, 3. Top Hook, 4. Progress Bar, 5. Pro Subtitles
           ffmpeg -i input_clip.mp4 -vf "
           crop=ih*(9/16):ih,
           scale=1080:1920,
@@ -77,10 +66,15 @@ jobs:
           " -c:v libx264 -crf 18 -c:a aac output.mp4
 
       - name: Notify n8n
+        # Added a check so it doesn't crash if the URL is missing
         run: |
-          curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
-          -H "Content-Type: application/json" \
-          -d '{"status": "completed", "file_name": "${{ github.event.client_payload.video_title }}", "run_id": "${{ github.run_id }}"}'
+          if [ -n "${{ github.event.client_payload.n8n_url }}" ]; then
+            curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{"status": "completed", "file_name": "${{ github.event.client_payload.video_title }}", "run_id": "${{ github.run_id }}"}'
+          else
+            echo "No Webhook URL provided, skipping notification."
+          fi
 
       - name: Upload Final Video
         uses: actions/upload-artifact@v4
