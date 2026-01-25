@@ -7,30 +7,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup FFmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v3
-
-      - name: Install Tools
+      - name: Install All Tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-liberation
           pip install gdown openai-whisper
-          sudo apt-get install -y fonts-liberation
 
       - name: Download Video
         run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O input.mp4
 
-      - name: AI Listening
-        # ADDED --word_timestamps True TO FIX THE ERROR
+      - name: AI Listening (Creating Captions)
         run: whisper input.mp4 --model base --output_format srt --max_words_per_line 3 --word_timestamps True
 
       - name: Process Video
+        env:
+          # This protects the $ and ! signs in MrBeast titles
+          VIDEO_TITLE: ${{ github.event.client_payload.video_title }}
         run: |
-          ffmpeg -i input.mp4 -t 58 -vf "
-          crop=ih*(9/16):ih,
-          scale=1080:1920,
-          drawbox=y=0:color=black@0.6:width=iw:height=220:t=fill,
-          drawtext=text='${{ github.event.client_payload.video_title }}':fontcolor=white:fontsize=75:x=(w-text_w)/2:y=70,
-          subtitles=input.srt:force_style='FontName=Liberation Sans,FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=200'
-          " -c:v libx264 -crf 18 -c:a aac output.mp4
+          ffmpeg -i input.mp4 -t 58 -vf "crop=ih*(9/16):ih,scale=1080:1920,drawbox=y=0:color=black@0.6:width=iw:height=220:t=fill,drawtext=text='$VIDEO_TITLE':fontcolor=white:fontsize=75:x=(w-text_w)/2:y=70:fontfile=/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf,subtitles=input.srt:force_style='FontName=Liberation Sans,FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=200'" -c:v libx264 -crf 18 -c:a aac output.mp4
 
       - name: Upload Finished Video
         uses: actions/upload-artifact@v4
