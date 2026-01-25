@@ -1,0 +1,20 @@
+name: Video Clipper
+on:
+  repository_dispatch:
+    types: [trigger-clipper]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download
+        run: curl -L "https://drive.google.com/uc?export=download&id=${{ github.event.client_payload.file_id }}" -o input.mp4
+
+      - name: Process
+        run: ffmpeg -i input.mp4 -t 58 -vf "crop=ih*(9/16):ih,scale=1080:1920" -c:v libx264 -crf 23 -c:a aac output.mp4
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipped-video
+          path: output.mp4
