@@ -10,70 +10,77 @@ jobs:
       - name: Install AI & Pro Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg bc
+          sudo apt-get install -y ffmpeg bc fonts-liberation
           pip install gdown openai-whisper
           mkdir -p ~/.fonts
-          wget -O ~/.fonts/BebasNeue.ttf "https://github.com/dharmatype/Bebas-Neue/raw/master/fonts/ttf/BebasNeue-Bold.ttf"
+          # FIXED FONT LINK
+          wget -O ~/.fonts/BebasNeue-Bold.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
           fc-cache -f -v
 
       - name: Download Video
         run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O raw_input.mp4
 
       - name: AI Smart Highlight & Precise Cut
-        id: cutter
         run: |
-          # Finds the loudest 58s in the video automatically
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
-          MAX_START=$(echo "$DURATION - 60" | bc | cut -d'.' -f1)
-          START_TIME=$(shuf -i 5-$MAX_START -n 1)
-          ffmpeg -ss $START_TIME -t 58 -i raw_input.mp4 -c copy input_clip.mp4
-          echo "START_AT=$START_TIME" >> $GITHUB_ENV
+          DUR_INT=$(printf "%.0f" $DURATION)
+          if [ "$DUR_INT" -gt "70" ]; then
+            MAX_START=$(($DUR_INT - 65))
+            START_TIME=$(shuf -i 10-$MAX_START -n 1)
+          else
+            START_TIME=0
+          fi
+          # We cut the video FIRST so the AI only listens to the 58s clip
+          ffmpeg -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-      - name: AI Transcription & Emoji Engine
+      - name: AI Transcription (Cumulative Pop-up)
         shell: python
         run: |
           import whisper
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
-          
-          # This script creates the "Cumulative" 1-2-3 word captions + Emoji logic
           with open("pro_subs.srt", "w", encoding="utf-8") as f:
-              for i, segment in enumerate(result['segments']):
+              counter = 1
+              for segment in result['segments']:
                   words = segment['words']
-                  for j in range(0, len(words), 3):
-                      chunk = words[j:j+3]
-                      start = chunk[0]['start']
-                      end = chunk[-1]['end']
-                      # Build text: Word1... then Word1 Word2... then Word1 Word2 Word3
-                      text = " ".join([w['word'].strip().upper() for w in chunk])
+                  # Groups words so they build up: "I"... "I PICKED"... "I PICKED MY"...
+                  for i in range(len(words)):
+                      start = words[i]['start']
+                      end = words[i]['end']
+                      # Show current word + next 2 if they exist for context
+                      text_chunk = " ".join([w['word'].strip().upper() for w in words[max(0, i-2):i+1]])
                       
-                      # Emoji Logic
+                      # Auto-Emoji Logic
                       emoji = ""
-                      if any(x in text for x in ["MONEY", "DOLLAR", "CASH", "RICH"]): emoji = "💰"
-                      if any(x in text for x in ["FIRE", "HOT", "BURN", "CRAZY"]): emoji = "🔥"
-                      if any(x in text for x in ["CAR", "DRIVE", "FAST"]): emoji = "🏎️"
-                      if any(x in text for x in ["WOW", "OMG", "UNBELIEVABLE"]): emoji = "😱"
+                      text_upper = text_chunk.upper()
+                      if any(x in text_upper for x in ["MONEY", "CASH", "RICH"]): emoji = "💰"
+                      if any(x in text_upper for x in ["FIRE", "HOT", "CRAZY"]): emoji = "🔥"
+                      if any(x in text_upper for x in ["CAR", "FAST", "DRIVE"]): emoji = "🏎️"
+                      if any(x in text_upper for x in ["WIN", "YES", "GOAL"]): emoji = "🏆"
                       
-                      f.write(f"{i+j+1}\n")
+                      f.write(f"{counter}\n")
                       f.write(f"00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + "\n")
-                      f.write(f"{text} {emoji}\n\n")
+                      f.write(f"{text_chunk} {emoji}\n\n")
+                      counter += 1
 
       - name: Final Pro Render
         run: |
+          # Filters: 1. Crop 9:16, 2. Ken Burns Zoom, 3. Top Hook, 4. Progress Bar, 5. Pro Subtitles
           ffmpeg -i input_clip.mp4 -vf "
           crop=ih*(9/16):ih,
-          scale=1080:1920:force_original_aspect_ratio=increase,center,
-          drawbox=y=0:color=black@0.6:width=iw:height=200:t=fill,
-          drawtext=text='WAIT FOR THE END 😱':fontcolor=white:fontsize=80:fontfile='~/.fonts/BebasNeue.ttf':x=(w-text_w)/2:y=60,
-          subtitles=pro_subs.srt:force_style='FontName=Bebas Neue,FontSize=35,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Alignment=2,MarginV=180',
-          drawbox=x=0:y=ih-15:w=iw*t/58:h=15:color=yellow@1:t=fill
-          " -c:v libx264 -crf 18 -c:a aac -shortest output.mp4
+          scale=1080:1920,
+          zoompan=z='min(zoom+0.0015,1.5)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,
+          drawbox=y=0:color=black@0.6:width=iw:height=220:t=fill,
+          drawtext=text='WAIT FOR THE END 😱':fontcolor=white:fontsize=85:fontfile='~/.fonts/BebasNeue-Bold.ttf':x=(w-text_w)/2:y=65,
+          subtitles=pro_subs.srt:force_style='FontName=Bebas Neue,FontSize=38,PrimaryColour=&H00FFFF,OutlineColour=&H000000,BorderStyle=1,Outline=3,Alignment=2,MarginV=180',
+          drawbox=x=0:y=ih-20:w=iw*t/58:h=20:color=yellow@1:t=fill
+          " -c:v libx264 -crf 18 -c:a aac output.mp4
 
-      - name: Notify n8n (Auto-Post Signal)
+      - name: Notify n8n
         run: |
-          curl -X POST "${{ github.event.client_payload.n8n_url }}" \
+          curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
           -H "Content-Type: application/json" \
-          -d '{"status": "completed", "repo": "${{ github.repository }}", "run_id": "${{ github.run_id }}"}'
+          -d '{"status": "completed", "file_name": "${{ github.event.client_payload.video_title }}", "run_id": "${{ github.run_id }}"}'
 
       - name: Upload Final Video
         uses: actions/upload-artifact@v4
