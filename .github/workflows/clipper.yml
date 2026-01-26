@@ -16,17 +16,18 @@ jobs:
       - name: Download Bebas Neue Font
         run: |
           mkdir -p ~/.fonts
+          # Fixed stable link for Bebas Neue
           wget -O ~/.fonts/BebasNeue.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf" || true
           fc-cache -f -v
 
       - name: Download Video from Drive
         run: |
           FILE_ID="${{ github.event.client_payload.file_id }}"
-          echo "Downloading file: $FILE_ID"
-          gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}/view" -O raw_input.mp4 || gdown "$FILE_ID" -O raw_input.mp4
+          gdown --fuzzy "$FILE_ID" -O raw_input.mp4
 
       - name: Fix Audio & Extract Clip
         run: |
+          # Ensuring audio is compatible for AI
           ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 fixed_input.mp4 2>/dev/null || ffmpeg -y -i raw_input.mp4 -c:v copy -an fixed_input.mp4
           
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 fixed_input.mp4)
@@ -39,7 +40,6 @@ jobs:
             START_TIME=0
           fi
           
-          echo "Cutting from ${START_TIME}s"
           ffmpeg -y -ss $START_TIME -t 58 -i fixed_input.mp4 -c:v libx264 -crf 18 -c:a aac -b:a 128k input_clip.mp4
 
       - name: AI Transcription with Niche Styling
@@ -50,129 +50,52 @@ jobs:
           
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
-          
           channel = os.environ.get("CHANNEL_TYPE", "podcast")
           
-          # Emojis for all niches
-          emoji_map = {
-              "MONEY": "\U0001F4B0",
-              "CASH": "\U0001F4B5", 
-              "RICH": "\U0001F911",
-              "FIRE": "\U0001F525",
-              "CRAZY": "\U0001F631",
-              "WOW": "\U0001F632",
-              "CAR": "\U0001F3CE",
-              "WIN": "\U0001F3C6",
-              "TIME": "\U000023F0",
-              "DEAD": "\U0001F480",
-              "LOVE": "\U00002764",
-              "FUNNY": "\U0001F923",
-              "STRONG": "\U0001F4AA",
-              "BRAIN": "\U0001F9E0",
-              "STAR": "\U00002B50",
-              "GOAL": "\U0001F3AF",
-              "KING": "\U0001F451",
-              "CHAMPION": "\U0001F3C6",
-              "SUCCESS": "\U0001F680",
-              "DREAM": "\U0001F31F"
-          }
-          
-          # Niche-specific highlight colors (ASS format: &HBBGGRR)
-          colors = {
-              "mrbeast": "&H00FFFF00",      # Cyan/Blue
-              "podcast": "&H0000FFFF",       # Yellow  
-              "motivational": "&H000080FF"   # Orange
-          }
-          
+          emoji_map = {"MONEY": "💰", "CASH": "💵", "RICH": "🤑", "FIRE": "🔥", "CRAZY": "😱", "WOW": "😲", "CAR": "🏎️", "WIN": "🏆"}
+          colors = {"mrbeast": "&H00FFFF00", "podcast": "&H0000FFFF", "motivational": "&H000080FF"}
           highlight_color = colors.get(channel, "&H0000FFFF")
           
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
-              # ASS Header
-              f.write("[Script Info]\n")
-              f.write("Title: Viral Captions\n")
-              f.write("ScriptType: v4.00+\n")
-              f.write("WrapStyle: 0\n")
-              f.write("PlayResX: 1080\n")
-              f.write("PlayResY: 1920\n")
-              f.write("ScaledBorderAndShadow: yes\n\n")
-              
-              f.write("[V4+ Styles]\n")
-              f.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
+              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nScaledBorderAndShadow: yes\n\n")
+              f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
               f.write(f"Style: Default,Bebas Neue,95,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,5,2,2,40,40,280,1\n\n")
-              
-              f.write("[Events]\n")
-              f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+              f.write("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
               
               for segment in result['segments']:
                   words = segment.get('words', [])
                   for i in range(len(words)):
-                      start = words[i]['start']
-                      end = words[i]['end']
-                      
-                      # Get 3 word window
-                      start_idx = max(0, i - 1)
-                      end_idx = min(len(words), i + 2)
-                      
-                      line_words = []
-                      emoji_to_add = ""
-                      
+                      start, end = words[i]['start'], words[i]['end']
+                      start_idx, end_idx = max(0, i - 1), min(len(words), i + 2)
+                      line_words, emo_to_add = [], ""
                       for idx in range(start_idx, end_idx):
                           word_text = words[idx]['word'].strip().upper()
-                          
-                          # Check for emoji match
                           for key, emo in emoji_map.items():
-                              if key in word_text:
-                                  emoji_to_add = emo
-                          
+                              if key in word_text: emo_to_add = emo
                           if idx == i:
-                              # Highlighted word with color and scale
                               line_words.append("{\\c" + highlight_color + "\\fscx110\\fscy110}" + word_text + "{\\r}")
                           else:
                               line_words.append(word_text)
                       
-                      styled_text = " ".join(line_words)
-                      if emoji_to_add:
-                          styled_text += " " + emoji_to_add
-                      
-                      # Format timestamp
-                      sh = int(start // 3600)
-                      sm = int((start % 3600) // 60)
-                      ss = start % 60
-                      eh = int(end // 3600)
-                      em = int((end % 3600) // 60)
-                      es = end % 60
-                      
-                      start_ts = f"{sh}:{sm:02d}:{ss:05.2f}"
-                      end_ts = f"{eh}:{em:02d}:{es:05.2f}"
-                      
-                      f.write(f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{styled_text}\n")
-          
-          print(f"Generated captions for {channel} with color {highlight_color}")
+                      ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
+                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,,0,0,0,,{' '.join(line_words)} {emo_to_add}\n")
         env:
           CHANNEL_TYPE: ${{ github.event.client_payload.channel_type }}
 
       - name: Final Pro Render
         run: |
-          ffmpeg -y -i input_clip.mp4 -vf "
-          crop=ih*(9/16):ih,
-          scale=1080:1920,
-          ass=klap_subs.ass
-          " -c:v libx264 -crf 18 -c:a aac -b:a 128k output.mp4
-          
-          ls -lh output.mp4
+          ffmpeg -y -i input_clip.mp4 -vf "crop=ih*(9/16):ih,scale=1080:1920,ass=klap_subs.ass" -c:v libx264 -crf 18 -c:a aac -b:a 128k output.mp4
 
       - name: Notify n8n
         if: always()
         run: |
           N8N_URL="${{ github.event.client_payload.n8n_url }}"
           if [ -n "$N8N_URL" ]; then
-            curl -L -X POST "$N8N_URL" \
-            -H "Content-Type: application/json" \
-            -d "{\"run_id\": \"${{ github.run_id }}\", \"file_name\": \"video\", \"channel_type\": \"${{ github.event.client_payload.channel_type }}\"}"
+            curl -L -X POST "$N8N_URL" -H "Content-Type: application/json" -d "{\"run_id\": \"${{ github.run_id }}\", \"file_name\": \"${{ github.event.client_payload.video_title }}\"}"
           fi
 
       - name: Upload Final Video
         uses: actions/upload-artifact@v4
         with:
-          name: viral-${{ github.event.client_payload.channel_type }}-video
+          name: viral-clip
           path: output.mp4
