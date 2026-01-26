@@ -20,12 +20,14 @@ jobs:
           fc-cache -f -v
 
       - name: Download Video from Drive
-        run: gdown --fuzzy "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
+        run: |
+          FILE_ID="${{ github.event.client_payload.file_id }}"
+          echo "Downloading file: $FILE_ID"
+          gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}/view" -O raw_input.mp4 || gdown "$FILE_ID" -O raw_input.mp4
 
       - name: Fix Audio & Extract Clip
         run: |
-          # First re-encode to fix any audio issues
-          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 fixed_input.mp4 || ffmpeg -y -i raw_input.mp4 -c:v copy -an fixed_input.mp4
+          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 fixed_input.mp4 2>/dev/null || ffmpeg -y -i raw_input.mp4 -c:v copy -an fixed_input.mp4
           
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 fixed_input.mp4)
           DUR_INT=$(printf "%.0f" $DURATION)
@@ -40,47 +42,99 @@ jobs:
           echo "Cutting from ${START_TIME}s"
           ffmpeg -y -ss $START_TIME -t 58 -i fixed_input.mp4 -c:v libx264 -crf 18 -c:a aac -b:a 128k input_clip.mp4
 
-      - name: AI Transcription (Highlighting & Emojis)
+      - name: AI Transcription with Niche Styling
         shell: python
         run: |
           import whisper
+          import os
           
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
           
+          channel = os.environ.get("CHANNEL_TYPE", "podcast")
+          
+          # Emojis for all niches
           emoji_map = {
-              "MONEY": "💰", "CASH": "💵", "RICH": "🤑", "FIRE": "🔥", 
-              "CRAZY": "😱", "WOW": "😲", "CAR": "🏎️", "WIN": "🏆",
-              "TIME": "⏰", "DEAD": "💀", "LOVE": "❤️", "FUNNY": "🤣"
+              "MONEY": "\U0001F4B0",
+              "CASH": "\U0001F4B5", 
+              "RICH": "\U0001F911",
+              "FIRE": "\U0001F525",
+              "CRAZY": "\U0001F631",
+              "WOW": "\U0001F632",
+              "CAR": "\U0001F3CE",
+              "WIN": "\U0001F3C6",
+              "TIME": "\U000023F0",
+              "DEAD": "\U0001F480",
+              "LOVE": "\U00002764",
+              "FUNNY": "\U0001F923",
+              "STRONG": "\U0001F4AA",
+              "BRAIN": "\U0001F9E0",
+              "STAR": "\U00002B50",
+              "GOAL": "\U0001F3AF",
+              "KING": "\U0001F451",
+              "CHAMPION": "\U0001F3C6",
+              "SUCCESS": "\U0001F680",
+              "DREAM": "\U0001F31F"
           }
-
-          with open("klap_subs.srt", "w", encoding="utf-8") as f:
-              counter = 1
+          
+          # Niche-specific highlight colors (ASS format: &HBBGGRR)
+          colors = {
+              "mrbeast": "&H00FFFF00",      # Cyan/Blue
+              "podcast": "&H0000FFFF",       # Yellow  
+              "motivational": "&H000080FF"   # Orange
+          }
+          
+          highlight_color = colors.get(channel, "&H0000FFFF")
+          
+          with open("klap_subs.ass", "w", encoding="utf-8") as f:
+              # ASS Header
+              f.write("[Script Info]\n")
+              f.write("Title: Viral Captions\n")
+              f.write("ScriptType: v4.00+\n")
+              f.write("WrapStyle: 0\n")
+              f.write("PlayResX: 1080\n")
+              f.write("PlayResY: 1920\n")
+              f.write("ScaledBorderAndShadow: yes\n\n")
+              
+              f.write("[V4+ Styles]\n")
+              f.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
+              f.write(f"Style: Default,Bebas Neue,95,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,5,2,2,40,40,280,1\n\n")
+              
+              f.write("[Events]\n")
+              f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+              
               for segment in result['segments']:
                   words = segment.get('words', [])
                   for i in range(len(words)):
                       start = words[i]['start']
                       end = words[i]['end']
                       
+                      # Get 3 word window
                       start_idx = max(0, i - 1)
                       end_idx = min(len(words), i + 2)
                       
                       line_words = []
-                      current_emoji = ""
+                      emoji_to_add = ""
+                      
                       for idx in range(start_idx, end_idx):
                           word_text = words[idx]['word'].strip().upper()
                           
+                          # Check for emoji match
                           for key, emo in emoji_map.items():
-                              if key in word_text: current_emoji = emo
+                              if key in word_text:
+                                  emoji_to_add = emo
                           
                           if idx == i:
-                              line_words.append(f'<font color="#FFFF00">{word_text}</font>')
+                              # Highlighted word with color and scale
+                              line_words.append("{\\c" + highlight_color + "\\fscx110\\fscy110}" + word_text + "{\\r}")
                           else:
                               line_words.append(word_text)
                       
-                      styled_text = " ".join(line_words) + f" {current_emoji}"
+                      styled_text = " ".join(line_words)
+                      if emoji_to_add:
+                          styled_text += " " + emoji_to_add
                       
-                      # Fix timestamp format for longer clips
+                      # Format timestamp
                       sh = int(start // 3600)
                       sm = int((start % 3600) // 60)
                       ss = start % 60
@@ -88,18 +142,24 @@ jobs:
                       em = int((end % 3600) // 60)
                       es = end % 60
                       
-                      f.write(f"{counter}\n")
-                      f.write(f"{sh:02d}:{sm:02d}:{ss:06.3f}".replace('.', ',') + " --> " + f"{eh:02d}:{em:02d}:{es:06.3f}".replace('.', ',') + "\n")
-                      f.write(f"{styled_text}\n\n")
-                      counter += 1
+                      start_ts = f"{sh}:{sm:02d}:{ss:05.2f}"
+                      end_ts = f"{eh}:{em:02d}:{es:05.2f}"
+                      
+                      f.write(f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{styled_text}\n")
+          
+          print(f"Generated captions for {channel} with color {highlight_color}")
+        env:
+          CHANNEL_TYPE: ${{ github.event.client_payload.channel_type }}
 
       - name: Final Pro Render
         run: |
           ffmpeg -y -i input_clip.mp4 -vf "
           crop=ih*(9/16):ih,
           scale=1080:1920,
-          subtitles=klap_subs.srt:force_style='FontName=Bebas Neue,FontSize=110,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=5,Alignment=2,MarginV=350'
+          ass=klap_subs.ass
           " -c:v libx264 -crf 18 -c:a aac -b:a 128k output.mp4
+          
+          ls -lh output.mp4
 
       - name: Notify n8n
         if: always()
@@ -114,5 +174,5 @@ jobs:
       - name: Upload Final Video
         uses: actions/upload-artifact@v4
         with:
-          name: viral-video-${{ github.event.client_payload.channel_type }}
+          name: viral-${{ github.event.client_payload.channel_type }}-video
           path: output.mp4
