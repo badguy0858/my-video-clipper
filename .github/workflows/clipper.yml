@@ -104,10 +104,11 @@ jobs:
       - name: Notify n8n
         if: always()
         run: |
-          if [ -n "${{ github.event.client_payload.n8n_url }}" ]; then
-            curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
+          N8N_URL="${{ github.event.client_payload.n8n_url }}"
+          if [ -n "$N8N_URL" ]; then
+            curl -L -X POST "$N8N_URL" \
             -H "Content-Type: application/json" \
-            -d '{"run_id": "${{ github.run_id }}", "file_name": "${{ github.event.client_payload.video_title }}", "channel_type": "${{ github.event.client_payload.channel_type }}"}'
+            -d "{\"run_id\": \"${{ github.run_id }}\", \"file_name\": \"video\", \"channel_type\": \"${{ github.event.client_payload.channel_type }}\"}"
           fi
 
       - name: Upload Final Video
