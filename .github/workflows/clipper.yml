@@ -1,468 +1,107 @@
-name: Multi-Channel Viral Clipper
-
+name: Ultimate AI Pro Clipper
 on:
   repository_dispatch:
     types: [trigger-clipper]
 
-# Input payload expected:
-# {
-#   "file_id": "Google Drive file ID or URL",
-#   "channel_type": "mrbeast" | "podcast" | "motivational",
-#   "video_title": "original filename",
-#   "n8n_url": "webhook callback URL"
-# }
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Setup Environment
-        run: |
-          echo "Channel Type: ${{ github.event.client_payload.channel_type }}"
-          echo "Video: ${{ github.event.client_payload.video_title }}"
-          
-      - name: Install Dependencies
+      - name: Install AI & Pro Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg bc
-          pip install gdown openai-whisper opencv-python-headless numpy
+          sudo apt-get install -y ffmpeg bc fonts-liberation
+          pip install gdown openai-whisper
 
-      - name: Download Fonts
+      - name: Download Bebas Neue Font
         run: |
           mkdir -p ~/.fonts
-          # Bebas Neue - Bold viral style
-          wget -q -O ~/.fonts/BebasNeue-Regular.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
-          # Montserrat - Clean modern style
-          wget -q -O ~/.fonts/Montserrat-Bold.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat-Bold.ttf"
+          wget -O BebasNeue.ttf "https://fonts.gstatic.com/s/bebasneue/v14/JTUSjIg69CK48gW7PXoo9WlHyw.ttf"
+          cp BebasNeue.ttf ~/.fonts/BebasNeue.ttf
           fc-cache -f -v
 
       - name: Download Video from Drive
-        run: gdown --fuzzy "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
+        run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O raw_input.mp4
 
-      - name: AI Transcribe Full Video
+      - name: AI Smart Cut (Randomizer)
+        run: |
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
+          DUR_INT=$(printf "%.0f" $DURATION)
+          if [ "$DUR_INT" -gt "70" ]; then
+            # We pick a random start from the middle 60% of the video where action usually is
+            MAX_START=$(($DUR_INT - 65))
+            START_TIME=$(shuf -i 15-$MAX_START -n 1)
+          else
+            START_TIME=0
+          fi
+          ffmpeg -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
+
+      - name: AI Transcription (Highlighting & Emojis)
         shell: python
         run: |
           import whisper
-          import json
-          
-          print("Loading Whisper model...")
-          model = whisper.load_model("base")
-          
-          print("Transcribing full video...")
-          result = model.transcribe("raw_input.mp4", word_timestamps=True)
-          
-          with open('full_transcription.json', 'w') as f:
-              json.dump(result, f)
-          
-          print(f"Transcribed {len(result['segments'])} segments")
-
-      - name: AI Find Most Engaging Segment
-        shell: python
-        run: |
-          import json
-          import re
-          
-          with open('full_transcription.json', 'r') as f:
-              result = json.load(f)
-          
-          # Engagement scoring keywords
-          HIGH_ENGAGEMENT = [
-              # Curiosity hooks
-              "secret", "truth", "actually", "really", "literally", "insane", "crazy",
-              "nobody knows", "most people", "here's the thing", "plot twist",
-              # Emotional triggers
-              "amazing", "incredible", "unbelievable", "shocking", "mind-blowing",
-              "changed my life", "best", "worst", "never", "always", "finally",
-              # Story hooks
-              "so basically", "let me tell you", "story time", "you won't believe",
-              "what happened was", "the reason", "because", "that's why",
-              # Questions (engagement)
-              "why", "how", "what if", "did you know", "have you ever",
-              # Action words
-              "watch", "look", "listen", "stop", "wait", "hold on",
-              # MrBeast style
-              "challenge", "money", "dollars", "gave", "won", "lost", "expensive",
-              # Podcast hooks
-              "interesting", "perspective", "think about", "the problem", "solution"
-          ]
-          
-          EMOJI_MAP = {
-              # Emotions
-              "happy": "😊", "sad": "😢", "angry": "😠", "love": "❤️", "heart": "❤️",
-              "laugh": "😂", "funny": "😂", "cry": "😭", "wow": "😮", "shocked": "😱",
-              "scared": "😨", "fear": "😰", "excited": "🔥", "fire": "🔥", "hot": "🔥",
-              # Actions
-              "money": "💰", "dollar": "💵", "rich": "💎", "expensive": "💸",
-              "win": "🏆", "winner": "🏆", "trophy": "🏆", "champion": "👑",
-              "lose": "❌", "lost": "😞", "fail": "💀",
-              "think": "🤔", "idea": "💡", "brain": "🧠", "smart": "🧠",
-              "work": "💪", "strong": "💪", "power": "⚡", "energy": "⚡",
-              "time": "⏰", "clock": "🕐", "fast": "⚡", "quick": "💨",
-              "food": "🍕", "eat": "😋", "hungry": "🍔", "delicious": "😋",
-              "sleep": "😴", "tired": "😩", "rest": "🛏️",
-              # Objects/Concepts
-              "phone": "📱", "computer": "💻", "game": "🎮", "music": "🎵",
-              "car": "🚗", "house": "🏠", "world": "🌍", "earth": "🌎",
-              "sun": "☀️", "moon": "🌙", "star": "⭐", "night": "🌙",
-              "water": "💧", "rain": "🌧️", "snow": "❄️",
-              # Reactions
-              "yes": "✅", "no": "❌", "stop": "🛑", "go": "🚀",
-              "up": "⬆️", "down": "⬇️", "top": "🔝",
-              "question": "❓", "answer": "💬", "point": "👉",
-              "secret": "🤫", "truth": "💯", "real": "💯", "fact": "📊",
-              "new": "✨", "best": "🏆", "worst": "💀",
-              "crazy": "🤯", "insane": "🤯", "mind": "🤯",
-              "subscribe": "🔔", "like": "👍", "comment": "💬"
-          }
-          
-          segments = result.get('segments', [])
-          
-          # Score each potential 55-second window
-          best_score = 0
-          best_start = 0
-          
-          for i, seg in enumerate(segments):
-              start_time = seg['start']
-              
-              # Get all text in next 55 seconds
-              window_text = ""
-              window_end = start_time + 55
-              
-              for s in segments:
-                  if s['start'] >= start_time and s['end'] <= window_end:
-                      window_text += " " + s['text']
-              
-              # Score this window
-              score = 0
-              text_lower = window_text.lower()
-              
-              for keyword in HIGH_ENGAGEMENT:
-                  if keyword in text_lower:
-                      score += 1
-              
-              # Bonus for questions (hooks)
-              score += text_lower.count("?") * 2
-              
-              # Bonus for exclamations (energy)
-              score += text_lower.count("!") * 1.5
-              
-              # Word density bonus (more talking = more engaging)
-              word_count = len(window_text.split())
-              if word_count > 80:
-                  score += 5
-              
-              if score > best_score:
-                  best_score = score
-                  best_start = start_time
-          
-          # Ensure we don't start too close to beginning or end
-          import subprocess
-          duration_result = subprocess.run(
-              ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', 'raw_input.mp4'],
-              capture_output=True, text=True
-          )
-          total_duration = float(duration_result.stdout.strip())
-          
-          best_start = max(2, min(best_start, total_duration - 60))
-          
-          print(f"Most engaging segment starts at {best_start:.1f}s (score: {best_score})")
-          
-          # Save for next steps
-          with open('clip_params.json', 'w') as f:
-              json.dump({
-                  'start_time': best_start,
-                  'duration': 58,
-                  'engagement_score': best_score,
-                  'emoji_map': EMOJI_MAP
-              }, f)
-
-      - name: Extract Best Clip
-        run: |
-          START=$(python3 -c "import json; print(json.load(open('clip_params.json'))['start_time'])")
-          echo "Extracting from ${START}s"
-          ffmpeg -y -ss "$START" -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
-
-      - name: AI Transcribe Clip with Word Timestamps
-        shell: python
-        run: |
-          import whisper
-          import json
-          
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
           
-          with open('clip_transcription.json', 'w') as f:
-              json.dump(result, f)
-          
-          print(f"Clip has {len(result['segments'])} segments")
-
-      - name: Face Detection & Smart Crop
-        shell: python
-        run: |
-          import cv2
-          import numpy as np
-          import json
-          import urllib.request
-
-          print("Downloading face detection model...")
-          urllib.request.urlretrieve(
-              "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt",
-              "deploy.prototxt"
-          )
-          urllib.request.urlretrieve(
-              "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
-              "face_model.caffemodel"
-          )
-
-          net = cv2.dnn.readNetFromCaffe("deploy.prototxt", "face_model.caffemodel")
-
-          cap = cv2.VideoCapture('input_clip.mp4')
-          width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-          height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-          
-          print(f"Video: {width}x{height}")
-
-          target_width = int(height * 9 / 16)
-          if target_width > width:
-              target_width = width
-
-          face_positions = []
-          frame_idx = 0
-
-          while cap.isOpened():
-              ret, frame = cap.read()
-              if not ret:
-                  break
-              
-              if frame_idx % 20 == 0:
-                  blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104.0, 177.0, 123.0))
-                  net.setInput(blob)
-                  detections = net.forward()
-                  
-                  best_area = 0
-                  best_center_x = None
-                  
-                  for i in range(detections.shape[2]):
-                      confidence = detections[0, 0, i, 2]
-                      if confidence > 0.6:
-                          box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
-                          x1, y1, x2, y2 = box.astype("int")
-                          area = (x2 - x1) * (y2 - y1)
-                          if area > best_area:
-                              best_area = area
-                              best_center_x = (x1 + x2) / 2
-                  
-                  if best_center_x is not None:
-                      face_positions.append(best_center_x)
-              
-              frame_idx += 1
-
-          cap.release()
-
-          if face_positions:
-              avg_face_x = int(np.median(face_positions))
-          else:
-              avg_face_x = width // 2
-
-          crop_x = avg_face_x - (target_width // 2)
-          crop_x = max(0, min(crop_x, width - target_width))
-
-          print(f"Face center: {avg_face_x}, Crop X: {crop_x}")
-
-          with open('crop_params.json', 'w') as f:
-              json.dump({
-                  'crop_x': crop_x,
-                  'crop_width': target_width,
-                  'original_width': width,
-                  'original_height': height
-              }, f)
-
-      - name: Generate Captions with Emojis
-        shell: python
-        run: |
-          import json
-          import re
-          
-          CHANNEL = "${{ github.event.client_payload.channel_type }}"
-          
-          with open('clip_transcription.json', 'r') as f:
-              result = json.load(f)
-          
-          with open('clip_params.json', 'r') as f:
-              params = json.load(f)
-          
-          EMOJI_MAP = params.get('emoji_map', {})
-          
-          def add_emoji(word):
-              """Add emoji after word if it matches"""
-              clean = re.sub(r'[^\w]', '', word.lower())
-              for key, emoji in EMOJI_MAP.items():
-                  if key in clean:
-                      return f"{word}{emoji}"
-              return word
-          
-          def format_ass_time(seconds):
-              h = int(seconds // 3600)
-              m = int((seconds % 3600) // 60)
-              s = seconds % 60
-              return f"{h}:{m:02d}:{s:05.2f}"
-          
-          # Channel-specific styles
-          STYLES = {
-              "mrbeast": {
-                  "font": "Bebas Neue",
-                  "size": 120,
-                  "highlight_size": 130,
-                  "color": "&H00FFFFFF",  # White
-                  "highlight": "&H0000FFFF",  # Yellow
-                  "outline": 6,
-                  "margin": 380,
-                  "words_shown": 2,  # Fast, punchy
-                  "add_emojis": True
-              },
-              "podcast": {
-                  "font": "Bebas Neue",
-                  "size": 105,
-                  "highlight_size": 115,
-                  "color": "&H00FFFFFF",
-                  "highlight": "&H0000FFFF",
-                  "outline": 5,
-                  "margin": 350,
-                  "words_shown": 3,  # Readable
-                  "add_emojis": False
-              },
-              "motivational": {
-                  "font": "Montserrat",
-                  "size": 90,
-                  "highlight_size": 100,
-                  "color": "&H00FFFFFF",
-                  "highlight": "&H0080FF",  # Orange
-                  "outline": 4,
-                  "margin": 400,
-                  "words_shown": 4,  # More context
-                  "add_emojis": True
-              }
+          # Emoji Dictionary
+          emoji_map = {
+              "MONEY": "💰", "DOLLAR": "💵", "RICH": "🤑",
+              "FIRE": "🔥", "CRAZY": "😱", "WOW": "😲",
+              "CAR": "🏎️", "BEAST": "🦁", "WIN": "🏆",
+              "LOOK": "👀", "TIME": "⏰", "DEAD": "💀",
+              "LOVE": "❤️", "LOL": "😂", "FUNNY": "🤣"
           }
-          
-          style = STYLES.get(CHANNEL, STYLES["podcast"])
-          
-          ass_content = f"""[Script Info]
-          Title: Viral Captions
-          ScriptType: v4.00+
-          WrapStyle: 0
-          PlayResX: 1080
-          PlayResY: 1920
-          ScaledBorderAndShadow: yes
 
-          [V4+ Styles]
-          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-          Style: Default,{style['font']},{style['size']},{style['color']},&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,{style['outline']},3,2,40,40,{style['margin']},1
+          with open("klap_subs.srt", "w", encoding="utf-8") as f:
+              counter = 1
+              for segment in result['segments']:
+                  words = segment['words']
+                  for i in range(len(words)):
+                      start = words[i]['start']
+                      end = words[i]['end']
+                      
+                      # Get a window of 3 words for context
+                      start_idx = max(0, i - 1)
+                      end_idx = min(len(words), i + 2)
+                      
+                      line_words = []
+                      current_emoji = ""
+                      for idx in range(start_idx, end_idx):
+                          word_text = words[idx]['word'].strip().upper()
+                          
+                          # Check for emojis
+                          for key, emo in emoji_map.items():
+                              if key in word_text: current_emoji = emo
+                          
+                          if idx == i: # Active word turns Yellow
+                              line_words.append(f"<font color=\"#FFFF00\">{word_text}</font>")
+                          else:
+                              line_words.append(word_text)
+                      
+                      styled_text = " ".join(line_words) + f" {current_emoji}"
+                      f.write(f"{counter}\n00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + f"\n{styled_text}\n\n")
+                      counter += 1
 
-          [Events]
-          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-          """
-
-          events = []
-          
-          for segment in result.get('segments', []):
-              words = segment.get('words', [])
-              if not words:
-                  continue
-              
-              context_range = style['words_shown'] - 1
-              
-              for i, word in enumerate(words):
-                  start = word['start']
-                  end = word['end']
-                  current_word = word['word'].strip().upper()
-                  
-                  # Add emoji if enabled
-                  if style['add_emojis']:
-                      current_word = add_emoji(current_word)
-                  
-                  # Context words
-                  before_words = []
-                  after_words = []
-                  
-                  for j in range(max(0, i - context_range), i):
-                      w = words[j]['word'].strip().upper()
-                      before_words.append(w)
-                  
-                  for j in range(i + 1, min(len(words), i + 1 + context_range)):
-                      w = words[j]['word'].strip().upper()
-                      after_words.append(w)
-                  
-                  # Build styled line
-                  line_parts = []
-                  
-                  if before_words:
-                      line_parts.append(" ".join(before_words))
-                  
-                  # Highlighted current word with pop animation
-                  highlighted = f"{{\\c{style['highlight']}\\fscx110\\fscy110\\t(0,50,\\fscx105\\fscy105)}}{current_word}{{\\r}}"
-                  line_parts.append(highlighted)
-                  
-                  if after_words:
-                      line_parts.append(" ".join(after_words))
-                  
-                  full_text = " ".join(line_parts)
-                  
-                  events.append(f"Dialogue: 0,{format_ass_time(start)},{format_ass_time(end)},Default,,0,0,0,,{full_text}")
-
-          ass_content += "\n".join(events)
-          
-          with open('captions.ass', 'w', encoding='utf-8') as f:
-              f.write(ass_content)
-          
-          print(f"Generated {len(events)} caption events for {CHANNEL} style")
-
-      - name: Final Render
+      - name: Final Pro Render (Reframer + Progress Bar)
         run: |
-          CHANNEL="${{ github.event.client_payload.channel_type }}"
-          CROP_X=$(python3 -c "import json; print(json.load(open('crop_params.json'))['crop_x'])")
-          CROP_W=$(python3 -c "import json; print(json.load(open('crop_params.json'))['crop_width'])")
-          ORIG_H=$(python3 -c "import json; print(json.load(open('crop_params.json'))['original_height'])")
-          
-          echo "Rendering $CHANNEL style..."
-          
-          # Channel-specific color grading
-          if [ "$CHANNEL" = "mrbeast" ]; then
-            # Vibrant, saturated look
-            COLOR_FILTER="eq=saturation=1.3:contrast=1.1:brightness=0.05"
-          elif [ "$CHANNEL" = "motivational" ]; then
-            # Cinematic, warm tones
-            COLOR_FILTER="eq=saturation=1.1:contrast=1.05,colorbalance=rs=0.1:gs=0.05:bs=-0.1"
-          else
-            # Clean podcast look
-            COLOR_FILTER="eq=saturation=1.0:contrast=1.05"
-          fi
-          
-          ffmpeg -y -i input_clip.mp4 -vf "
-            crop=${CROP_W}:${ORIG_H}:${CROP_X}:0,
-            scale=1080:1920,
-            ${COLOR_FILTER},
-            ass=captions.ass
-          " -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k -r 30 output.mp4
-          
-          echo "Render complete!"
-          ls -lh output.mp4
+          # zoompan=z='min(zoom+0.0015,1.5)' handles the "Face Tracking" motion
+          # drawbox at the bottom handles the yellow Progress Bar
+          ffmpeg -i input_clip.mp4 -vf "
+          crop=ih*(9/16):ih,
+          scale=1080:1920,
+          zoompan=z='min(zoom+0.001,1.3)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,
+          subtitles=klap_subs.srt:force_style='FontName=Bebas Neue,FontSize=32,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=250',
+          drawbox=x=0:y=ih-15:w=iw*t/58:h=15:color=yellow@1:t=fill
+          " -c:v libx264 -crf 18 -c:a aac output.mp4
 
-      - name: Notify n8n Webhook
-        if: ${{ github.event.client_payload.n8n_url != '' }}
+      - name: Notify n8n
         run: |
           curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "status": "completed",
-              "channel_type": "${{ github.event.client_payload.channel_type }}",
-              "file_name": "${{ github.event.client_payload.video_title }}",
-              "run_id": "${{ github.run_id }}"
-            }'
+          -H "Content-Type: application/json" \
+          -d '{"run_id": "${{ github.run_id }}", "file_name": "${{ github.event.client_payload.video_title }}"}'
 
-      - name: Upload Artifact
+      - name: Upload Final Video
         uses: actions/upload-artifact@v4
         with:
-          name: VIRAL-${{ github.event.client_payload.channel_type }}-VIDEO
+          name: klap-style-video
           path: output.mp4
-          retention-days: 7
