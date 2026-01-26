@@ -13,11 +13,11 @@ jobs:
           sudo apt-get install -y ffmpeg bc fonts-liberation
           pip install gdown openai-whisper
 
-      - name: Download Bebas Neue Font
+      - name: Download Bebas Neue Font (Fixed)
         run: |
           mkdir -p ~/.fonts
-          wget -O BebasNeue.ttf "https://fonts.gstatic.com/s/bebasneue/v14/JTUSjIg69CK48gW7PXoo9WlHyw.ttf"
-          cp BebasNeue.ttf ~/.fonts/BebasNeue.ttf
+          # Using a more stable permanent link for Bebas Neue
+          wget -O ~/.fonts/BebasNeue.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf" || true
           fc-cache -f -v
 
       - name: Download Video from Drive
@@ -28,9 +28,9 @@ jobs:
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
           DUR_INT=$(printf "%.0f" $DURATION)
           if [ "$DUR_INT" -gt "70" ]; then
-            # We pick a random start from the middle 60% of the video where action usually is
+            # Picks a random start between 10 seconds in and the end
             MAX_START=$(($DUR_INT - 65))
-            START_TIME=$(shuf -i 15-$MAX_START -n 1)
+            START_TIME=$(shuf -i 10-$MAX_START -n 1)
           else
             START_TIME=0
           fi
@@ -40,16 +40,15 @@ jobs:
         shell: python
         run: |
           import whisper
+          import os
+          
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
           
-          # Emoji Dictionary
           emoji_map = {
-              "MONEY": "💰", "DOLLAR": "💵", "RICH": "🤑",
-              "FIRE": "🔥", "CRAZY": "😱", "WOW": "😲",
-              "CAR": "🏎️", "BEAST": "🦁", "WIN": "🏆",
-              "LOOK": "👀", "TIME": "⏰", "DEAD": "💀",
-              "LOVE": "❤️", "LOL": "😂", "FUNNY": "🤣"
+              "MONEY": "💰", "CASH": "💵", "RICH": "🤑", "FIRE": "🔥", 
+              "CRAZY": "😱", "WOW": "😲", "CAR": "🏎️", "WIN": "🏆",
+              "TIME": "⏰", "DEAD": "💀", "LOVE": "❤️", "FUNNY": "🤣"
           }
 
           with open("klap_subs.srt", "w", encoding="utf-8") as f:
@@ -60,7 +59,7 @@ jobs:
                       start = words[i]['start']
                       end = words[i]['end']
                       
-                      # Get a window of 3 words for context
+                      # Get window of 3 words
                       start_idx = max(0, i - 1)
                       end_idx = min(len(words), i + 2)
                       
@@ -69,11 +68,11 @@ jobs:
                       for idx in range(start_idx, end_idx):
                           word_text = words[idx]['word'].strip().upper()
                           
-                          # Check for emojis
+                          # Match emojis
                           for key, emo in emoji_map.items():
                               if key in word_text: current_emoji = emo
                           
-                          if idx == i: # Active word turns Yellow
+                          if idx == i: # Highlight active word in Yellow
                               line_words.append(f"<font color=\"#FFFF00\">{word_text}</font>")
                           else:
                               line_words.append(word_text)
@@ -82,23 +81,24 @@ jobs:
                       f.write(f"{counter}\n00:00:{start:06.3f}".replace('.', ',') + " --> " + f"00:00:{end:06.3f}".replace('.', ',') + f"\n{styled_text}\n\n")
                       counter += 1
 
-      - name: Final Pro Render (Reframer + Progress Bar)
+      - name: Final Pro Render (Zoom + Progress Bar)
         run: |
-          # zoompan=z='min(zoom+0.0015,1.5)' handles the "Face Tracking" motion
-          # drawbox at the bottom handles the yellow Progress Bar
+          # The zoompan filter creates that 'Reframed/Face Tracked' motion feel
           ffmpeg -i input_clip.mp4 -vf "
           crop=ih*(9/16):ih,
           scale=1080:1920,
           zoompan=z='min(zoom+0.001,1.3)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,
-          subtitles=klap_subs.srt:force_style='FontName=Bebas Neue,FontSize=32,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=250',
+          subtitles=klap_subs.srt:force_style='FontName=Bebas Neue,FontSize=34,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=1,Outline=2.5,Alignment=2,MarginV=250',
           drawbox=x=0:y=ih-15:w=iw*t/58:h=15:color=yellow@1:t=fill
           " -c:v libx264 -crf 18 -c:a aac output.mp4
 
       - name: Notify n8n
         run: |
-          curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
-          -H "Content-Type: application/json" \
-          -d '{"run_id": "${{ github.run_id }}", "file_name": "${{ github.event.client_payload.video_title }}"}'
+          if [ -n "${{ github.event.client_payload.n8n_url }}" ]; then
+            curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{"run_id": "${{ github.run_id }}", "file_name": "${{ github.event.client_payload.video_title }}"}'
+          fi
 
       - name: Upload Final Video
         uses: actions/upload-artifact@v4
