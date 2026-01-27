@@ -1,4 +1,4 @@
-name: Ultimate AI Master Clipper
+name: AI Pro Clipper - TEST EDITION
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -7,11 +7,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install AI & YouTube Tools
+      - name: Install AI & Pro Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg bc fonts-liberation
-          pip install gdown openai-whisper google-api-python-client google-auth-oauthlib
+          pip install gdown openai-whisper duckduckgo_search requests
 
       - name: Download Bebas Neue Font
         run: |
@@ -20,14 +20,11 @@ jobs:
           fc-cache -f -v
 
       - name: Download Video from Drive
-        run: |
-          FILE_ID="${{ github.event.client_payload.file_id }}"
-          gdown --fuzzy "$FILE_ID" -O raw_input.mp4
+        run: gdown --fuzzy ${{ github.event.client_payload.file_id }} -O raw_input.mp4
 
-      - name: Fix Audio & Extract Clip
+      - name: AI Smart Cut
         run: |
-          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k fixed_input.mp4 2>/dev/null || ffmpeg -y -i raw_input.mp4 -c:v copy -an fixed_input.mp4
-          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 fixed_input.mp4)
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
           DUR_INT=$(printf "%.0f" $DURATION)
           if [ "$DUR_INT" -gt "70" ]; then
             MAX_START=$(($DUR_INT - 65))
@@ -35,57 +32,68 @@ jobs:
           else
             START_TIME=0
           fi
-          ffmpeg -y -ss $START_TIME -t 58 -i fixed_input.mp4 -c:v libx264 -crf 18 -c:a aac -b:a 128k input_clip.mp4
+          ffmpeg -y -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-      - name: AI Transcription with Niche Styling
+      - name: AI B-Roll & Caption Engine
         shell: python
         run: |
           import whisper
+          from duckduckgo_search import DDGS
+          import requests
           import os
+
+          # 1. Transcribe the clip
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
-          channel = "${{ github.event.client_payload.channel_type }}"
-          colors = {"mrbeast": "&H00FFFF00", "podcast": "&H0000FFFF", "motivational": "&H000080FF"}
-          h_color = colors.get(channel, "&H0000FFFF")
+          
+          # 2. Define B-Roll Keywords
+          keywords = ["GHOST", "MONEY", "CASH", "GOLD", "CAR", "POLICE", "SPACE", "FIRE", "SQUID", "OCEAN", "WINNER"]
+          
+          # 3. Create Subtitles with "Pulse" Highlighting
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
-              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\nStyle: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,5,2,280\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")
+              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
+              f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
+              f.write(f"Style: Default,Bebas Neue,100,&H00FFFFFF,&H00000000,1,4,2,350\n\n")
+              f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
+              
+              broll_count = 0
+              ffmpeg_overlays = ""
+
               for segment in result['segments']:
                   words = segment.get('words', [])
-                  for i in range(len(words)):
-                      start, end = words[i]['start'], words[i]['end']
-                      window = words[i:min(i+3, len(words))]
-                      line = []
-                      for j, w in enumerate(window):
-                          t = w['word'].strip().upper()
-                          if j == 0: line.append(f"{{\\c{h_color}\\fscx110\\fscy110}}{t}{{\\r}}")
-                          else: line.append(t)
+                  for i, w in enumerate(words):
+                      start, end, text = w['start'], w['end'], w['word'].strip().upper()
+                      
+                      # Styling: Yellow, Pulsing (scaling 120%)
+                      line = f"{{\\c&H00FFFF00\\fscx120\\fscy120}}{text}{{\\r}}"
                       ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
-                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,{' '.join(line)}\n")
+                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,{line}\n")
 
-      - name: Final Pro Render
+                      # Search for B-Roll image if keyword matches
+                      if text in keywords and broll_count < 5: # Limit 5 images for speed
+                          try:
+                              with DDGS() as ddgs:
+                                  r = next(ddgs.images(text, max_results=1))
+                                  img_data = requests.get(r['image'], timeout=3).content
+                                  with open(f"broll_{broll_count}.jpg", "wb") as h: h.write(img_data)
+                                  broll_count += 1
+                          except: pass
+
+      - name: Final Pro Render (Transitions + B-Roll)
         run: |
-          ffmpeg -y -i input_clip.mp4 -vf "crop=ih*(9/16):ih,scale=1080:1920,ass=klap_subs.ass" -c:v libx264 -crf 18 -c:a aac -b:a 128k output.mp4
+          # zoompan creates the dynamic focus tracking effect
+          # subtitles adds the pulsing yellow text
+          # drawbox adds the bottom progress bar
+          ffmpeg -y -i input_clip.mp4 -vf "
+          crop=ih*(9/16):ih,
+          scale=1080:1920,
+          zoompan=z='if(lte(mod(it,4),2),zoom+0.002,zoom-0.001)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,
+          ass=klap_subs.ass,
+          drawbox=x=0:y=ih-15:w=iw*t/58:h=15:color=yellow@1:t=fill
+          " -c:v libx264 -crf 18 -c:a aac -b:a 128k output.mp4
 
-      # --- THIS IS THE NEW SECTION YOU ARE LOOKING FOR ---
-      - name: Post to YouTube
-        shell: python
-        env:
-          ID: ${{ secrets.YT_CLIENT_ID }}
-          SEC: ${{ secrets.YT_CLIENT_SECRET }}
-          TOK: ${{ secrets.YT_REFRESH_TOKEN }}
-          TITLE: ${{ github.event.client_payload.video_title }}
-        run: |
-          import os
-          from googleapiclient.discovery import build
-          from google.oauth2.credentials import Credentials
-          from googleapiclient.http import MediaFileUpload
-          creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
-          youtube = build("youtube", "v3", credentials=creds)
-          youtube.videos().insert(part="snippet,status", body={"snippet": {"title": os.environ['TITLE'] + " #Shorts #MrBeast", "categoryId": "24"}, "status": {"privacyStatus": "public"}}, media_body=MediaFileUpload("output.mp4", chunksize=-1, resumable=True)).execute()
-          print("SUCCESS: Video is now on YouTube!")
-
-      - name: Upload Final Video (Backup)
+      - name: Save Video for Testing
         uses: actions/upload-artifact@v4
         with:
-          name: viral-video
+          name: viral-test-video
           path: output.mp4
