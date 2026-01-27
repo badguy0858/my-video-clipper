@@ -1,4 +1,4 @@
-name: Ultimate AI Pro Clipper
+name: Ultimate AI Master Clipper
 on:
   repository_dispatch:
     types: [trigger-clipper]
@@ -7,16 +7,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install AI & Pro Tools
+      - name: Install AI & YouTube Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg bc fonts-liberation
-          pip install gdown openai-whisper
+          pip install gdown openai-whisper google-api-python-client google-auth-oauthlib
 
       - name: Download Bebas Neue Font
         run: |
           mkdir -p ~/.fonts
-          # Fixed stable link for Bebas Neue
           wget -O ~/.fonts/BebasNeue.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf" || true
           fc-cache -f -v
 
@@ -27,19 +26,15 @@ jobs:
 
       - name: Fix Audio & Extract Clip
         run: |
-          # Ensuring audio is compatible for AI
-          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 fixed_input.mp4 2>/dev/null || ffmpeg -y -i raw_input.mp4 -c:v copy -an fixed_input.mp4
-          
+          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k fixed_input.mp4 2>/dev/null || ffmpeg -y -i raw_input.mp4 -c:v copy -an fixed_input.mp4
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 fixed_input.mp4)
           DUR_INT=$(printf "%.0f" $DURATION)
-          
           if [ "$DUR_INT" -gt "70" ]; then
             MAX_START=$(($DUR_INT - 65))
             START_TIME=$(shuf -i 10-$MAX_START -n 1)
           else
             START_TIME=0
           fi
-          
           ffmpeg -y -ss $START_TIME -t 58 -i fixed_input.mp4 -c:v libx264 -crf 18 -c:a aac -b:a 128k input_clip.mp4
 
       - name: AI Transcription with Niche Styling
@@ -47,55 +42,50 @@ jobs:
         run: |
           import whisper
           import os
-          
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
-          channel = os.environ.get("CHANNEL_TYPE", "podcast")
-          
-          emoji_map = {"MONEY": "💰", "CASH": "💵", "RICH": "🤑", "FIRE": "🔥", "CRAZY": "😱", "WOW": "😲", "CAR": "🏎️", "WIN": "🏆"}
+          channel = "${{ github.event.client_payload.channel_type }}"
           colors = {"mrbeast": "&H00FFFF00", "podcast": "&H0000FFFF", "motivational": "&H000080FF"}
-          highlight_color = colors.get(channel, "&H0000FFFF")
-          
+          h_color = colors.get(channel, "&H0000FFFF")
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
-              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nScaledBorderAndShadow: yes\n\n")
-              f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
-              f.write(f"Style: Default,Bebas Neue,95,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,5,2,2,40,40,280,1\n\n")
-              f.write("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
-              
+              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\nStyle: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,5,2,280\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")
               for segment in result['segments']:
                   words = segment.get('words', [])
                   for i in range(len(words)):
                       start, end = words[i]['start'], words[i]['end']
-                      start_idx, end_idx = max(0, i - 1), min(len(words), i + 2)
-                      line_words, emo_to_add = [], ""
-                      for idx in range(start_idx, end_idx):
-                          word_text = words[idx]['word'].strip().upper()
-                          for key, emo in emoji_map.items():
-                              if key in word_text: emo_to_add = emo
-                          if idx == i:
-                              line_words.append("{\\c" + highlight_color + "\\fscx110\\fscy110}" + word_text + "{\\r}")
-                          else:
-                              line_words.append(word_text)
-                      
+                      window = words[i:min(i+3, len(words))]
+                      line = []
+                      for j, w in enumerate(window):
+                          t = w['word'].strip().upper()
+                          if j == 0: line.append(f"{{\\c{h_color}\\fscx110\\fscy110}}{t}{{\\r}}")
+                          else: line.append(t)
                       ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
-                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,,0,0,0,,{' '.join(line_words)} {emo_to_add}\n")
-        env:
-          CHANNEL_TYPE: ${{ github.event.client_payload.channel_type }}
+                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,{' '.join(line)}\n")
 
       - name: Final Pro Render
         run: |
           ffmpeg -y -i input_clip.mp4 -vf "crop=ih*(9/16):ih,scale=1080:1920,ass=klap_subs.ass" -c:v libx264 -crf 18 -c:a aac -b:a 128k output.mp4
 
-      - name: Notify n8n
-        if: always()
+      # --- THIS IS THE NEW SECTION YOU ARE LOOKING FOR ---
+      - name: Post to YouTube
+        shell: python
+        env:
+          ID: ${{ secrets.YT_CLIENT_ID }}
+          SEC: ${{ secrets.YT_CLIENT_SECRET }}
+          TOK: ${{ secrets.YT_REFRESH_TOKEN }}
+          TITLE: ${{ github.event.client_payload.video_title }}
         run: |
-          N8N_URL="${{ github.event.client_payload.n8n_url }}"
-          if [ -n "$N8N_URL" ]; then
-            curl -L -X POST "$N8N_URL" -H "Content-Type: application/json" -d "{\"run_id\": \"${{ github.run_id }}\", \"file_name\": \"${{ github.event.client_payload.video_title }}\"}"
-          fi
+          import os
+          from googleapiclient.discovery import build
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.http import MediaFileUpload
+          creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
+          youtube = build("youtube", "v3", credentials=creds)
+          youtube.videos().insert(part="snippet,status", body={"snippet": {"title": os.environ['TITLE'] + " #Shorts #MrBeast", "categoryId": "24"}, "status": {"privacyStatus": "public"}}, media_body=MediaFileUpload("output.mp4", chunksize=-1, resumable=True)).execute()
+          print("SUCCESS: Video is now on YouTube!")
 
-      - name: Upload Final Video
+      - name: Upload Final Video (Backup)
         uses: actions/upload-artifact@v4
         with:
-          name: viral-clip
+          name: viral-video
           path: output.mp4
