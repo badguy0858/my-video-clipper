@@ -2,7 +2,7 @@ name: AI Pro Animal Factory
 on:
   repository_dispatch:
     types: [trigger-compilation]
-  workflow_dispatch: # Allows you to run it manually for testing
+  workflow_dispatch: # Manual trigger button
 
 jobs:
   build:
@@ -20,7 +20,7 @@ jobs:
       - name: Setup Subtitle Font
         run: |
           mkdir -p ~/.fonts
-          wget -O ~/.fonts/BebasNeue.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf"
+          wget -O ~/.fonts/BebasNeue.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf" || true
           fc-cache -f -v
 
       - name: Scout & Download Clips (Cookie Bypass)
@@ -29,83 +29,70 @@ jobs:
           YOUTUBE_DATA: ${{ secrets.YOUTUBE_COOKIES }}
         run: |
           mkdir -p clips
-          # Combine Cookies
-          echo "$REDDIT_DATA" > cookies.txt
-          echo "" >> cookies.txt
-          echo "$YOUTUBE_DATA" >> cookies.txt
+          
+          # Safely write cookies to file
+          cat <<EOF > cookies.txt
+          $REDDIT_DATA
+          $YOUTUBE_DATA
+          EOF
 
-          # Search & Download logic
+          # Remove any hidden Windows carriage returns (\r) that break Netscape format
+          sed -i 's/\r//' cookies.txt
+
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           
-          echo "Attempting to scrape Reddit..."
+          echo "Scouting Reddit..."
           yt-dlp --cookies cookies.txt --user-agent "$USER_AGENT" \
           "https://www.reddit.com/r/AnimalsBeingDerps/top/.json?t=day" \
-          --flat-playlist --print url --limit-rate 10M --max-downloads 8 | head -n 5 > links.txt
+          --flat-playlist --print url --limit-rate 10M --max-downloads 8 | head -n 5 > links.txt || echo "Reddit blocked"
 
           if [ ! -s links.txt ]; then
-            echo "Reddit blocked or empty, falling back to YouTube Search..."
+            echo "Reddit failed, falling back to YouTube Search..."
             yt-dlp --cookies cookies.txt --user-agent "$USER_AGENT" \
-            "ytsearch10:funny animal shorts reddit" --flat-playlist --print url | head -n 5 > links.txt
+            "ytsearch10:funny animal shorts" --flat-playlist --print url | head -n 5 > links.txt
           fi
 
-          # Download the actual files
+          # Download the clips
           yt-dlp --cookies cookies.txt --user-agent "$USER_AGENT" \
           -a links.txt -f "mp4" --no-playlist -o "clips/%(id)s.mp4"
 
       - name: Generate AI Voiceover
         run: |
-          edge-tts --text "These animals are having a totally normal day. Wait for the last one, it is hilarious! Subscribe for more fun." --write-media vo.mp3
+          edge-tts --text "Wait for the last animal, it is absolutely hilarious! Subscribe for your daily dose of fun." --write-media vo.mp3
 
       - name: Standardize and Stitch Clips
         run: |
           mkdir -p processed
-          # Standardize every clip to 1080x1920 (Vertical), 30fps, 44100Hz Audio
           for f in clips/*.mp4; do
             ffmpeg -y -i "$f" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \
             -af "aresample=44100,pan=stereo|c0=c0|c1=c1" -c:v libx264 -preset superfast "processed/${f##*/}"
           done
           
-          # Create list for concatenation
-          printf "file '%s'\n" processed/*.mp4 > list.txt
-          
-          # Stitch clips together
+          ls processed/*.mp4 | sed "s/^/file '/;s/$/'/" > list.txt
           ffmpeg -f concat -safe 0 -i list.txt -c copy raw_compilation.mp4
           
-          # Overlay Voiceover (Mix background audio with AI voice)
-          ffmpeg -i raw_compilation.mp4 -i vo.mp3 -filter_complex "[1:a]adelay=500|500[voice];[0:a][voice]amix=inputs=2:duration=first:dropout_transition=2" -c:v copy stitched_video.mp4
+          # Mix background audio with AI voice
+          ffmpeg -i raw_compilation.mp4 -i vo.mp3 -filter_complex "[1:a]adelay=500|500[voice];[0:a][voice]amix=inputs=2:duration=first" -c:v copy stitched_video.mp4
 
       - name: AI Transcription & Styled Captions
         shell: python
         run: |
           import whisper
-          import os
-
-          # Use Base model for speed on GitHub Actions
           model = whisper.load_model("base")
           result = model.transcribe("stitched_video.mp4", word_timestamps=True)
           
           with open("captions.ass", "w", encoding="utf-8") as f:
               f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
               f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
-              # Style: Yellow Text, Black Outline, Centered
               f.write("Style: Default,Bebas Neue,100,&H0000FFFF,&H00000000,1,4,2,350\n\n")
               f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
               
               for segment in result['segments']:
                   for word in segment.get('words', []):
-                      start = word['start']
-                      end = word['end']
+                      start, end = word['start'], word['end']
                       text = word['word'].strip().upper()
-                      
-                      # Formatting timestamps
-                      def format_ts(s):
-                          hrs = int(s // 3600)
-                          mins = int((s % 3600) // 60)
-                          secs = s % 60
-                          return f"{hrs}:{mins:02d}:{secs:05.2f}"
-                      
-                      # Add word-by-word highlight effect
-                      f.write(f"Dialogue: 0,{format_ts(start)},{format_ts(end)},Default,{text}\n")
+                      ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
+                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,{text}\n")
 
       - name: Burn Captions to Video
         run: |
@@ -130,23 +117,16 @@ jobs:
           
           youtube = build("youtube", "v3", credentials=creds)
           
-          request_body = {
-              "snippet": {
-                  "title": "Funny Animals Being Derps! 😂 #Shorts #FunnyAnimals",
-                  "description": "Daily dose of funny animals. Compiled automatically using AI.",
-                  "categoryId": "15" # Pets & Animals
-              },
-              "status": {
-                  "privacyStatus": "public",
-                  "selfDeclaredMadeForKids": False
-              }
+          body = {
+              "snippet": {"title": "Funny Animals Being Derps! 😂 #Shorts", "categoryId": "15"},
+              "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
           }
 
           media = MediaFileUpload("output_final.mp4", chunksize=-1, resumable=True)
-          youtube.videos().insert(part="snippet,status", body=request_body, media_body=media).execute()
+          youtube.videos().insert(part="snippet,status", body=body, media_body=media).execute()
 
       - name: Upload Backup Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: daily-animal-video
+          name: compiled-video
           path: output_final.mp4
