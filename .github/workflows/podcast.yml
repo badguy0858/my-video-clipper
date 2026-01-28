@@ -2,7 +2,6 @@ name: Ultimate AI Multi-Niche Clipper
 
 on:
   repository_dispatch:
-    # IMPORTANT: Ensure your n8n 'event_type' matches this name exactly
     types: [trigger-podcast]
 
 jobs:
@@ -13,7 +12,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg bc fonts-liberation
-          pip install gdown openai-whisper google-api-python-client google-auth-oauthlib
+          pip install --upgrade gdown openai-whisper google-api-python-client google-auth-oauthlib
 
       - name: Download Bebas Neue Font
         run: |
@@ -23,11 +22,12 @@ jobs:
 
       - name: Download Assets from Drive
         run: |
-          # Download main video
-          gdown --fuzzy "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
+          # Removed --confirm-form-gl as it is no longer supported/needed in new gdown versions
+          gdown --id "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
+          gdown --id "${{ github.event.client_payload.satisfying_id }}" -O satisfying.mp4
           
-          # Download satisfying background from your other Drive ID
-          gdown --fuzzy "${{ github.event.client_payload.satisfying_id }}" -O satisfying.mp4
+          # Verify files exist
+          ls -lh raw_input.mp4 satisfying.mp4
 
       - name: AI Smart Random Cut
         run: |
@@ -37,20 +37,20 @@ jobs:
           if [ "$MAX_START" -lt "1" ]; then START_TIME=0; else START_TIME=$(shuf -i 5-$MAX_START -n 1); fi
           ffmpeg -y -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-     - name: AI Transcription & Content Generator
+      - name: AI Transcription & Content Generator
         shell: python
         run: |
           import whisper
           import re
           from collections import Counter
 
-          # 1. AI Transcription
+          # 1. AI Transcribe
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
           full_text = result['text'].upper()
 
-          # 2. Generate AI Title
-          boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE", "SOME"]
+          # 2. AI Title Generation
+          boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE"]
           words = [w for w in re.findall(r'\w+', full_text) if w not in boring and len(w) > 3]
           most_common = [word for word, count in Counter(words).most_common(3)]
           if len(most_common) < 3: most_common = ["INSANE", "VIRAL", "MOMENT"]
@@ -59,36 +59,23 @@ jobs:
           with open("ai_content.txt", "w") as f:
               f.write(f"{ai_title}\nWait for the end! #Shorts #Podcast #Viral")
 
-          # 3. Create FIXED Captions (Removing the ,0,0,0,, error)
+          # 3. FIXED Subtitle Generator
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
-              # Header Section
               f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
-              f.write("[V4+ Styles]\n")
-              # This Format line defines exactly what fields we use
-              f.write("Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
-              # Style: Default font, Yellow Highlight (&H00FFFF), White secondary (&H00FFFFFF)
+              f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
               f.write("Style: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,4,2,480\n\n")
-              
-              f.write("[Events]\n")
-              # THE FIX: Added Name, MarginL, MarginR, MarginV, Effect to the Format
-              f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+              f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
               
               for segment in result['segments']:
                   for w in segment.get('words', []):
-                      start = w['start']
-                      end = w['end']
-                      text = w['word'].strip().upper()
-                      
-                      # Function to format time for .ass files
-                      def format_ts(s):
-                          td = int(s)
-                          m, s_rem = divmod(td, 60)
+                      def fmt_t(s):
+                          m, s_rem = divmod(s, 60)
                           h, m = divmod(m, 60)
-                          ms = int((s % 1) * 100)
-                          return f"{h}:{m:02d}:{s_rem:02d}.{ms:02d}"
-
-                      # Correctly formatted line with exactly 9 commas before the text
-                      f.write(f"Dialogue: 0,{format_ts(start)},{format_ts(end)},Default,,0,0,0,,{{\\c&H00FFFF}}{text}{{\\r}}\n")
+                          return f"{int(h)}:{int(m):02d}:{s_rem:05.2f}"
+                      
+                      word_text = w['word'].strip().upper()
+                      # Strict format: Layer, Start, End, Style, Text (exactly 4 commas before text)
+                      f.write(f"Dialogue: 0,{fmt_t(w['start'])},{fmt_t(w['end'])},Default,{{\\c&H00FFFF}}{word_text}{{\\r}}\n")
 
       - name: Final Split-Screen Render
         run: |
