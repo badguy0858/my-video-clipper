@@ -1,108 +1,84 @@
-name: Ultimate AI Multi-Niche Clipper
-
+name: Ultimate AI Master Clipper
 on:
   repository_dispatch:
-    types: [trigger-podcast]
+    types: [trigger-clipper]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install AI & Pro Tools
+      - name: Install AI & YouTube Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg bc fonts-liberation
           pip install gdown openai-whisper google-api-python-client google-auth-oauthlib
-
       - name: Download Bebas Neue Font
         run: |
           mkdir -p ~/.fonts
-          wget -q -O ~/.fonts/BebasNeue.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
+          wget -O ~/.fonts/BebasNeue.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf" || true
           fc-cache -f -v
-
-      - name: Download Assets from Drive
+      - name: Download Video from Drive
         run: |
-          # Using --id for maximum reliability
-          gdown --id "${{ github.event.client_payload.file_id }}" -O raw_input.mp4 --confirm-form-gl
-          gdown --id "${{ github.event.client_payload.satisfying_id }}" -O satisfying.mp4 --confirm-form-gl
-
-      - name: AI Smart Random Cut
+          FILE_ID="${{ github.event.client_payload.file_id }}"
+          gdown --fuzzy "$FILE_ID" -O raw_input.mp4
+      - name: Fix Audio & Extract Clip
         run: |
-          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
+          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k fixed_input.mp4 2>/dev/null || ffmpeg -y -i raw_input.mp4 -c:v copy -an fixed_input.mp4
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 fixed_input.mp4)
           DUR_INT=$(printf "%.0f" $DURATION)
-          MAX_START=$(($DUR_INT - 65))
-          if [ "$MAX_START" -lt "1" ]; then START_TIME=0; else START_TIME=$(shuf -i 5-$MAX_START -n 1); fi
-          ffmpeg -y -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
-
-      - name: AI Transcription & Content Generator
+          if [ "$DUR_INT" -gt "70" ]; then
+            MAX_START=$(($DUR_INT - 65))
+            START_TIME=$(shuf -i 10-$MAX_START -n 1)
+          else
+            START_TIME=0
+          fi
+          ffmpeg -y -ss $START_TIME -t 58 -i fixed_input.mp4 -c:v libx264 -crf 18 -c:a aac -b:a 128k input_clip.mp4
+      - name: AI Transcription with Niche Styling
         shell: python
         run: |
           import whisper
-          import re
-          from collections import Counter
-
-          # 1. AI Transcribe
+          import os
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
-          full_text = result['text'].upper()
-
-          # 2. AI Title Generation
-          boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE"]
-          words = [w for w in re.findall(r'\w+', full_text) if w not in boring and len(w) > 3]
-          most_common = [word for word, count in Counter(words).most_common(3)]
-          if len(most_common) < 3: most_common = ["INSANE", "VIRAL", "MOMENT"]
-          ai_title = " ".join(most_common)
-          
-          with open("ai_content.txt", "w") as f:
-              f.write(f"{ai_title}\nWait for the end! #Shorts #Podcast #Viral")
-
-          # 3. FIXED Subtitle Generator (Strict Format to prevent 0,0,0 error)
+          channel = "${{ github.event.client_payload.channel_type }}"
+          colors = {"mrbeast": "&H00FFFF00", "podcast": "&H0000FFFF", "motivational": "&H000080FF"}
+          h_color = colors.get(channel, "&H0000FFFF")
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
-              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
-              f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
-              f.write("Style: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,4,2,480\n\n")
-              f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
-              
+              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\nStyle: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,5,2,280\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")
               for segment in result['segments']:
-                  for w in segment.get('words', []):
-                      def fmt_t(s):
-                          m, s_rem = divmod(s, 60)
-                          h, m = divmod(m, 60)
-                          return f"{int(h)}:{int(m):02d}:{s_rem:05.2f}"
-                      
-                      word_text = w['word'].strip().upper()
-                      # Using exactly 4 commas to match the Format line above
-                      f.write(f"Dialogue: 0,{fmt_t(w['start'])},{fmt_t(w['end'])},Default,{{\\c&H00FFFF}}{word_text}{{\\r}}\n")
-
-      - name: Final Split-Screen Render
+                  words = segment.get('words', [])
+                  for i in range(len(words)):
+                      start, end = words[i]['start'], words[i]['end']
+                      window = words[i:min(i+3, len(words))]
+                      line = []
+                      for j, w in enumerate(window):
+                          t = w['word'].strip().upper()
+                          if j == 0: line.append(f"{{\\c{h_color}\\fscx110\\fscy110}}{t}{{\\r}}")
+                          else: line.append(t)
+                      ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
+                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,{' '.join(line)}\n")
+      - name: Final Pro Render
         run: |
-          ffmpeg -y -i input_clip.mp4 -i satisfying.mp4 -filter_complex \
-          "[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top]; \
-           [1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; \
-           [top][bottom]vstack=inputs=2,ass=klap_subs.ass" \
-          -map 0:a -c:v libx264 -crf 18 -t 58 output.mp4
-
+          ffmpeg -y -i input_clip.mp4 -vf "crop=ih*(9/16):ih,scale=1080:1920,ass=klap_subs.ass" -c:v libx264 -crf 18 -c:a aac -b:a 128k output.mp4
+      # --- THIS IS THE NEW SECTION YOU ARE LOOKING FOR ---
       - name: Post to YouTube
         shell: python
         env:
           ID: ${{ secrets.YT_CLIENT_ID }}
           SEC: ${{ secrets.YT_CLIENT_SECRET }}
           TOK: ${{ secrets.YT_REFRESH_TOKEN }}
+          TITLE: ${{ github.event.client_payload.video_title }}
         run: |
           import os
           from googleapiclient.discovery import build
           from google.oauth2.credentials import Credentials
           from googleapiclient.http import MediaFileUpload
-
-          with open("ai_content.txt", "r") as f:
-              lines = f.readlines()
-              yt_title = lines[0].strip()
-              yt_desc = "".join(lines[1:])
-
           creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
           youtube = build("youtube", "v3", credentials=creds)
-          youtube.videos().insert(
-              part="snippet,status",
-              body={"snippet": {"title": yt_title, "description": yt_desc, "categoryId": "24"}, "status": {"privacyStatus": "public"}},
-              media_body=MediaFileUpload("output.mp4", chunksize=-1, resumable=True)
-          ).execute()
+          youtube.videos().insert(part="snippet,status", body={"snippet": {"title": os.environ['TITLE'] + " #Shorts #MrBeast", "categoryId": "24"}, "status": {"privacyStatus": "public"}}, media_body=MediaFileUpload("output.mp4", chunksize=-1, resumable=True)).execute()
+          print("SUCCESS: Video is now on YouTube!")
+      - name: Upload Final Video (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: viral-video
+          path: output.mp4
