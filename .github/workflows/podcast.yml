@@ -89,12 +89,12 @@ jobs:
            [0:a][music]amix=inputs=2:duration=first:dropout_transition=2[afinal]" \
           -map "[vfinal]" -map "[afinal]" -c:v libx264 -crf 18 -c:a aac -t 58 output.mp4
 
-      - name: Post to YouTube
+     - name: Post to YouTube
         shell: python
         env:
-          ID: ${{ secrets.YT_CLIENT_ID }}
-          SEC: ${{ secrets.YT_CLIENT_SECRET }}
-          TOK: ${{ secrets.YT_REFRESH_TOKEN }}
+          ID: ${{ secrets.YT_ID_PODCAST }} # <--- It only looks at the Podcast ID
+          SEC: ${{ secrets.YT_SEC_PODCAST }} # <--- It only looks at the Podcast Secret
+          TOK: ${{ secrets.YT_REFRESH_TOKEN_PODCAST }} # <--- It only looks at the Podcast Token
         run: |
           import os
           from googleapiclient.discovery import build
