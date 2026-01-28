@@ -1,8 +1,7 @@
-name: Ultimate Multi-Niche Split-Screen Clipper
-
+name: Ultimate AI Multi-Niche Clipper
 on:
   repository_dispatch:
-    types: [trigger-clipper]
+    types: [trigger-podcast]
 
 jobs:
   build:
@@ -14,20 +13,13 @@ jobs:
           sudo apt-get install -y ffmpeg bc fonts-liberation
           pip install gdown openai-whisper google-api-python-client google-auth-oauthlib
 
-      - name: Download Bebas Neue Font
+      - name: Download Assets
         run: |
-          mkdir -p ~/.fonts
-          wget -O ~/.fonts/BebasNeue.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
-          fc-cache -f -v
-
-      - name: Download Raw Content
-        run: |
-          # Download the main video from your Drive
+          # Download main video
           gdown --fuzzy "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
           
-          # Download the "Satisfying" background (Subway Surfers / Parkour)
-          # You can replace this URL with your own satisfying video link
-          wget -O satisfying.mp4 "https://pub-8488334468f74819a6d49819665f80b9.r2.dev/subway_surfers_template.mp4"
+          # FIXED LINK: Public Subway Surfers Template
+          wget -O satisfying.mp4 "https://archive.org/download/subway-surfers-gameplay-no-copyright/Subway%20Surfers%20Gameplay%20-%20No%20Copyright.mp4"
 
       - name: AI Smart Random Cut
         run: |
@@ -39,57 +31,57 @@ jobs:
           else
             START_TIME=0
           fi
-          # Create the 58s clip of the main person
           ffmpeg -y -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-      - name: AI Pro Transcription (Klap Style)
+      - name: AI Transcribe & Content Generator
         shell: python
         run: |
           import whisper
+          import re
+          from collections import Counter
+
+          # 1. AI Listening
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
+          full_text = result['text'].upper()
+
+          # 2. AI 3-WORD TITLE GENERATOR
+          # Remove boring words to find the "Power Words"
+          boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE"]
+          words = [w for w in re.findall(r'\w+', full_text) if w not in boring and len(w) > 3]
+          most_common = [word for word, count in Counter(words).most_common(3)]
           
-          channel = "${{ github.event.client_payload.channel_type }}"
-          h_color = "&H00FFFF" # Yellow for current word
+          # Fallback if text is too short
+          if len(most_common) < 3: most_common = ["AMAZING", "VIRAL", "MOMENT"]
+          ai_title = " ".join(most_common)
           
+          # 3. AI DESCRIPTION GENERATOR
+          niche = "${{ github.event.client_payload.channel_type }}"
+          ai_desc = f"Wait for the end! 😱\n\nFull story in this clip.\n\n#Shorts #{niche} #AI #Viral"
+
+          # Save for next steps
+          with open("ai_content.txt", "w") as f:
+              f.write(f"{ai_title}\n{ai_desc}")
+          
+          print(f"GENETATED TITLE: {ai_title}")
+
+          # 4. CAPTION GENERATOR (Klap Style)
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
-              # Podcast niche puts captions in the middle (on the split line)
-              margin_v = 480 if channel == "podcast" else 280
-              
-              f.write(f"[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
-              f.write(f"[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
-              f.write(f"Style: Default,Bebas Neue,90,&H00FFFFFF,&H00000000,1,4,2,{margin_v}\n\n")
-              f.write(f"[Events]\nFormat: Layer, Start, End, Style, Text\n")
-              
+              margin = 480 if niche == "podcast" else 280
+              f.write(f"[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\nStyle: Default,Liberation Sans,90,&H00FFFFFF,&H00000000,1,4,2,{margin}\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")
               for segment in result['segments']:
                   words = segment.get('words', [])
-                  for i in range(len(words)):
-                      start, end = words[i]['start'], words[i]['end']
-                      # Show current word highlighted, and next 2 words in white
-                      window = words[i:min(i+3, len(words))]
-                      line = []
-                      for j, w in enumerate(window):
-                          t = w['word'].strip().upper()
-                          if j == 0: line.append(f"{{\\c{h_color}\\fscx110\\fscy110}}{t}{{\\r}}")
-                          else: line.append(t)
-                      
+                  for i, w in enumerate(words):
                       ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
-                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,,0,0,0,,{' '.join(line)}\n")
+                      current = w['word'].strip().upper()
+                      f.write(f"Dialogue: 0,{ts(w['start'])},{ts(w['end'])},Default,,0,0,0,,{{\\c&H00FFFF}}{current}{{\\r}}\n")
 
-      - name: Final Pro Render (Split-Screen Logic)
+      - name: Final Pro Render
         run: |
-          CHANNEL="${{ github.event.client_payload.channel_type }}"
-          
-          if [ "$CHANNEL" = "podcast" ]; then
-            # SPLIT SCREEN: Podcast on Top, Satisfying on Bottom
-            ffmpeg -y -i input_clip.mp4 -i satisfying.mp4 -filter_complex "
-            [0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];
-            [1:v]ss=30,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];
-            [top][bottom]vstack=inputs=2[vsplit];
-            [vsplit]ass=klap_subs.ass[vfinal]" -map "[vfinal]" -map 0:a -c:v libx264 -crf 18 -c:a aac -t 58 output.mp4
+          if [ "${{ github.event.client_payload.channel_type }}" = "podcast" ]; then
+            ffmpeg -y -i input_clip.mp4 -i satisfying.mp4 -filter_complex "[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];[1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2,ass=klap_subs.ass" -map 0:a -c:v libx264 -crf 18 -t 58 output.mp4
           else
-            # STANDARD: Full Screen Vertical Crop
-            ffmpeg -y -i input_clip.mp4 -vf "crop=ih*(9/16):ih,scale=1080:1920,ass=klap_subs.ass" -c:v libx264 -crf 18 -c:a aac output.mp4
+            ffmpeg -y -i input_clip.mp4 -vf "crop=ih*(9/16):ih,scale=1080:1920,ass=klap_subs.ass" -c:v libx264 -crf 18 -t 58 output.mp4
           fi
 
       - name: Post to YouTube
@@ -98,45 +90,33 @@ jobs:
           ID: ${{ secrets.YT_CLIENT_ID }}
           SEC: ${{ secrets.YT_CLIENT_SECRET }}
           TOK: ${{ secrets.YT_REFRESH_TOKEN }}
-          TITLE: ${{ github.event.client_payload.video_title }}
-          CHANNEL: ${{ github.event.client_payload.channel_type }}
         run: |
           import os
           from googleapiclient.discovery import build
           from google.oauth2.credentials import Credentials
           from googleapiclient.http import MediaFileUpload
-          
-          # Use channel type in hashtags
-          tags = f" #Shorts #{os.environ['CHANNEL']} #Viral"
-          
-          creds = Credentials(None, refresh_token=os.environ['TOK'], 
-                             client_id=os.environ['ID'], client_secret=os.environ['SEC'], 
-                             token_uri="https://oauth2.googleapis.com/token")
+
+          with open("ai_content.txt", "r") as f:
+              content = f.readlines()
+              title = content[0].strip()
+              desc = "".join(content[1:])
+
+          creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
           youtube = build("youtube", "v3", credentials=creds)
-          
-          request = youtube.videos().insert(
+          youtube.videos().insert(
               part="snippet,status",
-              body={
-                  "snippet": {
-                      "title": os.environ['TITLE'] + tags,
-                      "description": "Auto-generated viral clip.",
-                      "categoryId": "24"
-                  },
-                  "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
-              },
+              body={"snippet": {"title": title, "description": desc, "categoryId": "24"}, "status": {"privacyStatus": "public"}},
               media_body=MediaFileUpload("output.mp4", chunksize=-1, resumable=True)
-          )
-          request.execute()
-          print("SUCCESS: Uploaded to YouTube")
+          ).execute()
 
       - name: Notify n8n Webhook
         run: |
           curl -L -X POST "${{ github.event.client_payload.n8n_url }}" \
           -H "Content-Type: application/json" \
-          -d '{"status": "completed", "run_id": "${{ github.run_id }}", "channel": "${{ github.event.client_payload.channel_type }}"}'
+          -d '{"status": "completed", "run_id": "${{ github.run_id }}"}'
 
       - name: Upload Artifact (Backup)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.client_payload.channel_type }}-video
+          name: viral-video
           path: output.mp4
