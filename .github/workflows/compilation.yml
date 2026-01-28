@@ -56,13 +56,11 @@ jobs:
           # 4. Validate we got URLs
           if [ ! -s links.txt ]; then
             echo "Search failed. Using fallback curated list..."
-            cat > links.txt << 'EOF'
-https://www.youtube.com/shorts/kJQP7kiw5Fk
-https://www.youtube.com/shorts/n4PR9NZlAB4
-https://www.youtube.com/shorts/1Ne5mfKaBXk
-https://www.youtube.com/shorts/W8waoRp_hhk
-https://www.youtube.com/shorts/RFxVT7UdFDk
-EOF
+            echo "https://www.youtube.com/shorts/kJQP7kiw5Fk" > links.txt
+            echo "https://www.youtube.com/shorts/n4PR9NZlAB4" >> links.txt
+            echo "https://www.youtube.com/shorts/1Ne5mfKaBXk" >> links.txt
+            echo "https://www.youtube.com/shorts/W8waoRp_hhk" >> links.txt
+            echo "https://www.youtube.com/shorts/RFxVT7UdFDk" >> links.txt
           fi
 
           echo "URLs to download:"
