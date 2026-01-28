@@ -22,12 +22,8 @@ jobs:
 
       - name: Download Assets from Drive
         run: |
-          # Removed --confirm-form-gl as it is no longer supported/needed in new gdown versions
           gdown --id "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
           gdown --id "${{ github.event.client_payload.satisfying_id }}" -O satisfying.mp4
-          
-          # Verify files exist
-          ls -lh raw_input.mp4 satisfying.mp4
 
       - name: AI Smart Random Cut
         run: |
@@ -53,19 +49,28 @@ jobs:
           boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE"]
           words = [w for w in re.findall(r'\w+', full_text) if w not in boring and len(w) > 3]
           most_common = [word for word, count in Counter(words).most_common(3)]
-          if len(most_common) < 3: most_common = ["INSANE", "VIRAL", "MOMENT"]
-          ai_title = " ".join(most_common)
+          ai_title = " ".join(most_common) if len(most_common) >= 3 else "VIRAL MOMENT"
           
           with open("ai_content.txt", "w") as f:
               f.write(f"{ai_title}\nWait for the end! #Shorts #Podcast #Viral")
 
-          # 3. FIXED Subtitle Generator
+          # 3. ADVANCED Subtitle Generator (Center Captions + Watermark)
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
               f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
               f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
-              f.write("Style: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,4,2,480\n\n")
+              
+              # STYLE 1: Center Captions (Yellow Highlight) - MarginV 960 is the exact vertical center
+              f.write("Style: Main,Bebas Neue,100,&H00FFFFFF,&H00000000,1,4,2,960\n")
+              
+              # STYLE 2: Watermark (White 50% Opacity) - &H80 is 50% transparency in hex
+              f.write("Style: Watermark,Bebas Neue,45,&H80FFFFFF,&H00000000,1,1,2,880\n\n")
+              
               f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
               
+              # ADD PERMANENT WATERMARK
+              f.write("Dialogue: 0,0:00:00.00,0:00:58.00,Watermark,@Chikoslovakia\n")
+              
+              # ADD DYNAMIC CAPTIONS
               for segment in result['segments']:
                   for w in segment.get('words', []):
                       def fmt_t(s):
@@ -74,8 +79,7 @@ jobs:
                           return f"{int(h)}:{int(m):02d}:{s_rem:05.2f}"
                       
                       word_text = w['word'].strip().upper()
-                      # Strict format: Layer, Start, End, Style, Text (exactly 4 commas before text)
-                      f.write(f"Dialogue: 0,{fmt_t(w['start'])},{fmt_t(w['end'])},Default,{{\\c&H00FFFF}}{word_text}{{\\r}}\n")
+                      f.write(f"Dialogue: 0,{fmt_t(w['start'])},{fmt_t(w['end'])},Main,{{\\c&H00FFFF}}{word_text}{{\\r}}\n")
 
       - name: Final Split-Screen Render
         run: |
@@ -99,8 +103,7 @@ jobs:
 
           with open("ai_content.txt", "r") as f:
               lines = f.readlines()
-              yt_title = lines[0].strip()
-              yt_desc = "".join(lines[1:])
+              yt_title, yt_desc = lines[0].strip(), "".join(lines[1:])
 
           creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
           youtube = build("youtube", "v3", credentials=creds)
