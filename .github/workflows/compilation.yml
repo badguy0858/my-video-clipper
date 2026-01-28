@@ -57,11 +57,9 @@ jobs:
           else
             echo "=== STRATEGY 2: Using Curated Working URLs ==="
             # These are verified public domain / creative commons animal videos
-            cat > potential_urls.txt << 'URLEOF'
-https://www.youtube.com/watch?v=J---aiyznGQ
-https://www.youtube.com/watch?v=tntOCGkgt98
-https://www.youtube.com/watch?v=YCaGYUIfdy4
-URLEOF
+            echo "https://www.youtube.com/watch?v=J---aiyznGQ" > potential_urls.txt
+            echo "https://www.youtube.com/watch?v=tntOCGkgt98" >> potential_urls.txt
+            echo "https://www.youtube.com/watch?v=YCaGYUIfdy4" >> potential_urls.txt
           fi
 
           echo "=== DOWNLOADING WITH FLEXIBLE FORMAT ==="
@@ -189,7 +187,7 @@ URLEOF
           import sys
           
           print("Loading Whisper model...")
-          model = whisper.load_model("tiny")  # Using tiny for speed
+          model = whisper.load_model("tiny")
           
           print("Transcribing audio...")
           result = model.transcribe("final_with_audio.mp4", 
@@ -198,14 +196,12 @@ URLEOF
           
           print("Generating subtitle file...")
           with open("captions.ass", "w", encoding="utf-8") as f:
-              # ASS Header
               f.write("[Script Info]\n")
               f.write("ScriptType: v4.00+\n")
               f.write("PlayResX: 1080\n")
               f.write("PlayResY: 1920\n")
               f.write("WrapStyle: 0\n\n")
               
-              # Style definition - Viral caption style
               f.write("[V4+ Styles]\n")
               f.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
                      "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
@@ -214,32 +210,27 @@ URLEOF
               f.write("Style: Caption,Bebas Neue,120,&H00FFFFFF,&H00FFFFFF,&H00000000,"
                      "&H80000000,-1,0,0,0,100,100,2,0,1,6,3,2,20,20,120,1\n\n")
               
-              # Events
               f.write("[Events]\n")
               f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
               
               def ts(seconds):
-                  """Convert seconds to ASS timestamp format"""
                   h = int(seconds // 3600)
                   m = int((seconds % 3600) // 60)
                   s = seconds % 60
                   return f"{h}:{m:02d}:{s:05.2f}"
               
-              # Process segments
               for seg in result['segments']:
                   words = seg.get('words', [])
                   
                   if not words:
-                      # Fallback: use segment timing
                       text = seg['text'].strip().upper()
                       if text:
                           f.write(f"Dialogue: 0,{ts(seg['start'])},{ts(seg['end'])},"
                                  f"Caption,,0,0,0,,{text}\n")
                   else:
-                      # Word-by-word captions (viral style)
                       for word in words:
                           text = word['word'].strip().upper()
-                          if text and len(text) > 1:  # Skip single chars
+                          if text and len(text) > 1:
                               f.write(f"Dialogue: 0,{ts(word['start'])},{ts(word['end'])},"
                                      f"Caption,,0,0,0,,{text}\n")
           
@@ -273,7 +264,6 @@ URLEOF
           from google.oauth2.credentials import Credentials
           from googleapiclient.http import MediaFileUpload
           
-          # Check if credentials are configured
           if not all([os.environ.get('TOK'), os.environ.get('ID'), os.environ.get('SEC')]):
               print("⚠️  YouTube credentials not configured - skipping upload")
               print("Video will be available as workflow artifact")
@@ -303,7 +293,7 @@ URLEOF
                               "#shorts #animals #viral #trending"
                           ),
                           "tags": ["shorts", "animals", "viral", "trending", "cute", "funny"],
-                          "categoryId": "15"  # Pets & Animals
+                          "categoryId": "15"
                       },
                       "status": {
                           "privacyStatus": "public",
@@ -329,7 +319,7 @@ URLEOF
           except Exception as e:
               print(f"❌ Upload failed: {str(e)}")
               print("Video saved as artifact for manual upload")
-              exit(0)  # Don't fail the workflow
+              exit(0)
 
       - name: Save Final Video
         uses: actions/upload-artifact@v4
