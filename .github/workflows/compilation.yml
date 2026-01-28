@@ -1,4 +1,4 @@
-name: AI Pro Animal Factory - NO API NEEDED
+name: AI Pro Animal Factory - NO COOKIE SEARCH
 on:
   repository_dispatch:
     types: [trigger-compilation]
@@ -11,395 +11,89 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Video & AI Tools
+      - name: Install Engines
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nodejs fonts-liberation bc python3-pip jq curl
-          pip install --break-system-packages yt-dlp edge-tts openai-whisper google-api-python-client requests beautifulsoup4 lxml
+          sudo apt-get install -y ffmpeg fonts-liberation bc
+          pip install yt-dlp edge-tts openai-whisper duckduckgo_search google-api-python-client
 
-      - name: Setup Viral Font
+      - name: Setup Font
         run: |
           mkdir -p ~/.fonts
           wget -O ~/.fonts/BebasNeue.ttf "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf" || true
           fc-cache -f -v
 
-      - name: Smart Video Discovery (No API Required)
+      - name: AI Content Scout (Search Engine Proxy)
         shell: python
         run: |
-          import requests
-          import json
-          import time
-          from urllib.parse import urlparse, parse_qs
-          import re
-          
-          print("🔍 Discovering viral animal videos from multiple sources...")
-          
-          all_video_urls = []
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
-          
-          # ===================================================================
-          # METHOD 1: Reddit JSON Feeds (No API Key Needed!)
-          # Reddit allows public access to .json endpoints without authentication
-          # ===================================================================
-          
-          print("\n📡 METHOD 1: Scraping Reddit JSON feeds...")
-          
-          subreddits = [
-              "AnimalsBeingDerps",
-              "aww", 
-              "Eyebleach",
-              "Zoomies",
-              "funny",
-              "AnimalsBeingBros"
-          ]
-          
-          cutoff_time = time.time() - (48 * 3600)  # Last 48 hours
-          
-          for subreddit in subreddits:
-              try:
-                  # Add .json to any subreddit URL - no API key needed!
-                  url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=100"
-                  
-                  print(f"  Checking r/{subreddit}...")
-                  response = requests.get(url, headers=headers, timeout=15)
-                  
-                  if response.status_code == 200:
-                      data = response.json()
-                      posts = data.get('data', {}).get('children', [])
-                      
-                      for post in posts:
-                          try:
-                              p = post['data']
-                              created = p.get('created_utc', 0)
-                              
-                              # Only recent posts
-                              if created < cutoff_time:
-                                  continue
-                              
-                              score = p.get('score', 0)
-                              
-                              # Only popular posts (more likely to be good quality)
-                              if score < 100:
-                                  continue
-                              
-                              post_url = p.get('url', '')
-                              domain = p.get('domain', '')
-                              
-                              # Extract video URLs
-                              if 'youtube.com' in post_url or 'youtu.be' in post_url:
-                                  all_video_urls.append({
-                                      'url': post_url,
-                                      'score': score,
-                                      'source': f"r/{subreddit}",
-                                      'title': p.get('title', '')[:100]
-                                  })
-                              
-                              # Reddit video
-                              elif p.get('is_video') and 'media' in p:
-                                  try:
-                                      video_url = p['media']['reddit_video']['fallback_url']
-                                      all_video_urls.append({
-                                          'url': video_url,
-                                          'score': score,
-                                          'source': f"r/{subreddit}",
-                                          'title': p.get('title', '')[:100]
-                                      })
-                                  except:
-                                      pass
-                              
-                              # v.redd.it
-                              elif 'v.redd.it' in post_url:
-                                  all_video_urls.append({
-                                      'url': post_url,
-                                      'score': score,
-                                      'source': f"r/{subreddit}",
-                                      'title': p.get('title', '')[:100]
-                                  })
-                          
-                          except Exception as e:
-                              continue
-                  
-                  time.sleep(2)  # Be nice to Reddit servers
-                  
-              except Exception as e:
-                  print(f"  ⚠️ Error with r/{subreddit}: {e}")
-                  continue
-          
-          print(f"✓ Found {len(all_video_urls)} videos from Reddit")
-          
-          # ===================================================================
-          # METHOD 2: Trending from 9GAG (No API Needed)
-          # ===================================================================
-          
-          print("\n📡 METHOD 2: Checking 9GAG trending...")
-          
+          from duckduckgo_search import DDGS
+          import os
+          print("Searching Reddit via DuckDuckGo Proxy...")
+          links = []
           try:
-              url = "https://9gag.com/v1/group-posts/group/default/type/hot?c=10"
-              response = requests.get(url, headers=headers, timeout=10)
-              
-              if response.status_code == 200:
-                  data = response.json()
-                  posts = data.get('data', {}).get('posts', [])
-                  
-                  for post in posts:
-                      try:
-                          if post.get('type') == 'Animated':
-                              # 9GAG videos
-                              images = post.get('images', {})
-                              video_url = images.get('image460sv', {}).get('url')
-                              
-                              if video_url:
-                                  all_video_urls.append({
-                                      'url': video_url,
-                                      'score': post.get('upVoteCount', 0),
-                                      'source': '9gag',
-                                      'title': post.get('title', '')[:100]
-                                  })
-                      except:
-                          continue
-                  
-                  print(f"✓ Found {len([x for x in all_video_urls if x['source']=='9gag'])} videos from 9GAG")
+              with DDGS() as ddgs:
+                  # Search for Reddit videos from the last 24 hours
+                  results = ddgs.text('site:reddit.com "v.redd.it" funny animals', time='d', max_results=15)
+                  for r in results:
+                      if "/r/" in r['href']: links.append(r['href'])
+          except:
+              pass
           
-          except Exception as e:
-              print(f"⚠️ 9GAG fetch failed: {e}")
-          
-          # ===================================================================
-          # METHOD 3: Imgur Viral Gallery (No API Needed)
-          # ===================================================================
-          
-          print("\n📡 METHOD 3: Checking Imgur viral...")
-          
-          try:
-              url = "https://imgur.com/t/aww/viral"
-              response = requests.get(url, headers=headers, timeout=10)
-              
-              if response.status_code == 200:
-                  # Parse for video URLs in the HTML
-                  mp4_matches = re.findall(r'https://i\.imgur\.com/[a-zA-Z0-9]+\.mp4', response.text)
-                  
-                  for video_url in mp4_matches[:5]:
-                      all_video_urls.append({
-                          'url': video_url,
-                          'score': 1000,
-                          'source': 'imgur',
-                          'title': 'Imgur Viral'
-                      })
-                  
-                  print(f"✓ Found {len(mp4_matches[:5])} videos from Imgur")
-          
-          except Exception as e:
-              print(f"⚠️ Imgur fetch failed: {e}")
-          
-          # ===================================================================
-          # METHOD 4: TikTok Trending (Using Third-Party Scraper)
-          # ===================================================================
-          
-          print("\n📡 METHOD 4: Checking TikTok trending animals...")
-          
-          try:
-              # Use TikTok's public feed (no auth needed)
-              keywords = ['funny+animals', 'cute+pets', 'animal+videos']
-              
-              for keyword in keywords:
-                  url = f"https://www.tiktok.com/tag/{keyword}"
-                  response = requests.get(url, headers=headers, timeout=10)
-                  
-                  if response.status_code == 200:
-                      # Find video URLs in the HTML
-                      video_matches = re.findall(r'"playAddr":"([^"]+)"', response.text)
-                      
-                      for video_url in video_matches[:3]:
-                          # Decode the URL
-                          video_url = video_url.replace('\\u002F', '/')
-                          all_video_urls.append({
-                              'url': video_url,
-                              'score': 5000,
-                              'source': 'tiktok',
-                              'title': f'TikTok {keyword}'
-                          })
-                  
-                  time.sleep(1)
-              
-              print(f"✓ Found {len([x for x in all_video_urls if x['source']=='tiktok'])} videos from TikTok")
-          
-          except Exception as e:
-              print(f"⚠️ TikTok fetch failed: {e}")
-          
-          # ===================================================================
-          # SORT BY SCORE AND SAVE TOP VIDEOS
-          # ===================================================================
-          
-          print("\n📊 Ranking videos by popularity...")
-          
-          # Sort by score (upvotes/likes)
-          all_video_urls.sort(key=lambda x: x['score'], reverse=True)
-          
-          # Take top 10
-          top_videos = all_video_urls[:10]
-          
-          print(f"\n🎯 Selected top {len(top_videos)} videos:")
-          for i, video in enumerate(top_videos, 1):
-              print(f"  {i}. [{video['source']}] Score: {video['score']} - {video['title']}")
-          
-          # Save URLs to file
-          with open('video_urls.txt', 'w') as f:
-              for video in top_videos:
-                  f.write(f"{video['url']}\n")
-          
-          # Save metadata
-          with open('video_metadata.json', 'w') as f:
-              json.dump(top_videos, f, indent=2)
-          
-          print(f"\n✅ Saved {len(top_videos)} video URLs to video_urls.txt")
+          with open("links.txt", "w") as f:
+              for link in links[:5]: f.write(link + "\n")
 
-      - name: Download Videos with yt-dlp
+      - name: Download Clips
         run: |
           mkdir -p clips
-          
-          echo "=== DOWNLOADING VIDEOS ==="
-          
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          download_count=0
-          
-          while IFS= read -r url && [ $download_count -lt 5 ]; do
-            if [ ! -z "$url" ]; then
-              echo "Downloading: $url"
-              
-              # yt-dlp works with Reddit, YouTube, TikTok, Imgur, and more!
-              yt-dlp --user-agent "$UA" \
-                --no-check-certificate \
-                --ignore-errors \
-                -f "best[height<=1080][ext=mp4]/best[ext=mp4]/best" \
-                --merge-output-format mp4 \
-                -o "clips/video_${download_count}.%(ext)s" \
-                "$url" && {
-                  echo "✓ Downloaded video $download_count"
-                  download_count=$((download_count + 1))
-                } || echo "✗ Failed: $url"
-            fi
-          done < video_urls.txt
-          
-          actual_count=$(ls -1 clips/*.mp4 2>/dev/null | wc -l)
-          echo "Total downloaded: $actual_count"
-          
-          # Fallback if nothing downloaded
-          if [ $actual_count -eq 0 ]; then
-            echo "Creating fallback content..."
-            
-            # Create visually appealing sample videos
-            ffmpeg -f lavfi -i "color=c=#FF6B9D:s=1080x1920:d=6" \
-              -f lavfi -i "sine=frequency=440:duration=6" \
-              -vf "drawtext=text='CUTE ANIMALS':fontsize=100:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" \
-              -pix_fmt yuv420p -c:v libx264 -c:a aac clips/video_0.mp4
-            
-            ffmpeg -f lavfi -i "color=c=#4ECDC4:s=1080x1920:d=6" \
-              -f lavfi -i "sine=frequency=600:duration=6" \
-              -vf "drawtext=text='FUNNY MOMENTS':fontsize=100:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" \
-              -pix_fmt yuv420p -c:v libx264 -c:a aac clips/video_1.mp4
-            
-            ffmpeg -f lavfi -i "color=c=#95E1D3:s=1080x1920:d=6" \
-              -f lavfi -i "sine=frequency=800:duration=6" \
-              -vf "drawtext=text='LIKE & SUBSCRIBE':fontsize=80:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" \
-              -pix_fmt yuv420p -c:v libx264 -c:a aac clips/video_2.mp4
+          # Try downloading from Reddit (No cookies needed usually)
+          yt-dlp -i -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" \
+          --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+          -a links.txt --no-playlist -o "clips/%(id)s.mp4" || echo "Reddit links failed"
+
+          # Final fallback if Reddit fails
+          if [ -z "$(ls -A clips)" ]; then
+            echo "Falling back to YouTube Search..."
+            yt-dlp "ytsearch5:funny animal shorts" -f mp4 --max-downloads 3 -o "clips/%(id)s.mp4"
           fi
-          
-          ls -lh clips/
 
-      - name: AI Voice Generation
+      - name: Generate AI Voiceover
         run: |
-          edge-tts --voice en-US-AriaNeural \
-            --text "These animal moments are absolutely amazing! Make sure to like and subscribe for more incredible content!" \
-            --write-media vo.mp3 --rate=+15%
+          edge-tts --text "Wait for the last one, it's hilarious! Subscribe for your daily animal fun." --write-media vo.mp3
 
-      - name: Professional Video Processing
+      - name: Standardize and Stitch
         run: |
           mkdir -p processed
-          
-          echo "=== Processing clips ==="
-          clip_num=0
-          
           for f in clips/*.mp4; do
-            [ -f "$f" ] || continue
-            
-            duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null || echo "6")
-            
-            # Limit to 7 seconds per clip
-            if (( $(echo "$duration > 7" | bc -l 2>/dev/null || echo "0") )); then
-              trim_duration=7
-            else
-              trim_duration=$duration
-            fi
-            
-            ffmpeg -y -i "$f" -t $trim_duration \
-              -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \
-              -af "aresample=44100,volume=2.0,highpass=f=200" \
-              -c:v libx264 -preset medium -crf 23 \
-              -c:a aac -b:a 128k \
-              "processed/clip_$(printf '%03d' $clip_num).mp4" 2>/dev/null || continue
-            
-            clip_num=$((clip_num + 1))
+            ffmpeg -y -i "$f" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \
+            -af "aresample=44100,pan=stereo|c0=c0|c1=c1" -c:v libx264 -preset superfast "processed/${f##*/}"
           done
-          
-          if [ -z "$(ls -A processed 2>/dev/null)" ]; then
-            echo "ERROR: No clips processed"
-            exit 1
-          fi
-          
-          # Create concat file
-          for f in processed/clip_*.mp4; do
-            echo "file '$(realpath "$f")'" >> concat_list.txt
-          done
-          
-          # Merge
-          ffmpeg -f concat -safe 0 -i concat_list.txt -c copy raw_video.mp4
-          
-          # Add voiceover
-          ffmpeg -i raw_video.mp4 -i vo.mp3 \
-            -filter_complex "[0:a]volume=0.3[bg];[1:a]adelay=500|500,volume=2.0[vo];[bg][vo]amix=inputs=2:duration=first[aout]" \
-            -map 0:v -map "[aout]" \
-            -c:v copy -c:a aac -b:a 192k \
-            final_with_audio.mp4
+          ls processed/*.mp4 | sed "s/^/file '/;s/$/'/" > list.txt
+          ffmpeg -f concat -safe 0 -i list.txt -c copy raw_stitch.mp4
+          ffmpeg -i raw_stitch.mp4 -i vo.mp3 -filter_complex "[1:a]adelay=500|500[voice];[0:a][voice]amix=inputs=2:duration=first" -c:v copy stitched.mp4
 
       - name: AI Captions
         shell: python
         run: |
           import whisper
-          
-          model = whisper.load_model("tiny")
-          result = model.transcribe("final_with_audio.mp4", word_timestamps=True, language="en")
-          
-          with open("captions.ass", "w", encoding="utf-8") as f:
+          model = whisper.load_model("base")
+          result = model.transcribe("stitched.mp4", word_timestamps=True)
+          with open("subs.ass", "w", encoding="utf-8") as f:
               f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
-              f.write("[V4+ Styles]\n")
-              f.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
-              f.write("Style: Caption,Bebas Neue,130,&H00FFFF00,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,7,3,2,20,20,100,1\n\n")
-              f.write("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
-              
-              def ts(s):
-                  h = int(s // 3600)
-                  m = int((s % 3600) // 60)
-                  sec = s % 60
-                  return f"{h}:{m:02d}:{sec:05.2f}"
-              
-              for seg in result['segments']:
-                  for word in seg.get('words', []):
+              f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
+              f.write("Style: Default,Bebas Neue,100,&H0000FFFF,&H00000000,1,4,2,380\n\n")
+              f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
+              for segment in result['segments']:
+                  for word in segment.get('words', []):
+                      start, end = word['start'], word['end']
                       text = word['word'].strip().upper()
-                      if text and len(text) > 1:
-                          f.write(f"Dialogue: 0,{ts(word['start'])},{ts(word['end'])},Caption,,0,0,0,,{text}\n")
+                      ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
+                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Default,{text}\n")
 
-      - name: Final Render
+      - name: Render Final
         run: |
-          ffmpeg -y -i final_with_audio.mp4 -vf "ass=captions.ass" \
-            -c:v libx264 -crf 20 -preset medium \
-            -c:a copy -movflags +faststart \
-            output_final.mp4
-          
-          ls -lh output_final.mp4
+          ffmpeg -y -i stitched.mp4 -vf "ass=subs.ass" -c:v libx264 -crf 18 -c:a aac output_final.mp4
 
-      - name: YouTube Upload
-        continue-on-error: true
+      - name: Post to YouTube
         shell: python
         env:
           ID: ${{ secrets.YT_CLIENT_ID }}
@@ -410,39 +104,12 @@ jobs:
           from googleapiclient.discovery import build
           from google.oauth2.credentials import Credentials
           from googleapiclient.http import MediaFileUpload
-          
-          if not all([os.environ.get('TOK'), os.environ.get('ID'), os.environ.get('SEC')]):
-              print("⚠️ YouTube credentials not set")
-              exit(0)
-          
-          try:
-              creds = Credentials(None, refresh_token=os.environ['TOK'], 
-                                client_id=os.environ['ID'], client_secret=os.environ['SEC'],
-                                token_uri="https://oauth2.googleapis.com/token")
-              youtube = build("youtube", "v3", credentials=creds)
-              
-              request = youtube.videos().insert(
-                  part="snippet,status",
-                  body={
-                      "snippet": {
-                          "title": "Viral Animal Moments 🐾 #Shorts",
-                          "description": "The best animal videos from Reddit! 🎥\n\n#shorts #animals #viral",
-                          "tags": ["shorts", "animals", "viral", "reddit"],
-                          "categoryId": "15"
-                      },
-                      "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
-                  },
-                  media_body=MediaFileUpload("output_final.mp4", chunksize=-1, resumable=True)
-              )
-              
-              response = request.execute()
-              print(f"✅ Uploaded! https://youtube.com/shorts/{response['id']}")
-          except Exception as e:
-              print(f"❌ Upload failed: {e}")
+          creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
+          youtube = build("youtube", "v3", credentials=creds)
+          youtube.videos().insert(part="snippet,status", body={"snippet": {"title": "Funny Animals! 😂 #Shorts", "categoryId": "15"}, "status": {"privacyStatus": "public"}}, media_body=MediaFileUpload("output_final.mp4", chunksize=-1, resumable=True)).execute()
 
-      - name: Save Video
+      - name: Save Backup
         uses: actions/upload-artifact@v4
         with:
-          name: viral-shorts-final
+          name: animal-video
           path: output_final.mp4
-          retention-days: 30
