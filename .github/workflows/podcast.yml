@@ -19,14 +19,14 @@ jobs:
           wget -q -O ~/.fonts/BebasNeue.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
           fc-cache -f -v
 
-      - name: Download Assets
+     - name: Download Assets
         run: |
           # 1. Download main video from Drive
           gdown --fuzzy "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
           
-          # 2. Download Satisfying Gameplay from YouTube (The link you provided)
-          # We download only 2 minutes to save time
-          yt-dlp -f "bestvideo[height<=1080][ext=mp4]" --downloader ffmpeg --downloader-args "ffmpeg:-t 120" "https://youtu.be/3clqk2U3T9Y?si=E3SyrbrKeKs269ZA" -o satisfying.mp4
+          # 2. Download Satisfying Video from your OTHER Drive Folder
+          # This ID is sent dynamically from n8n now
+          gdown --fuzzy "${{ github.event.client_payload.satisfying_id }}" -O satisfying.mp4
 
       - name: AI Smart Random Cut
         run: |
