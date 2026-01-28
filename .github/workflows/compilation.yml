@@ -1,0 +1,58 @@
+name: Auto Animal Compilation
+on:
+  repository_dispatch:
+    types: [trigger-compilation]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Pro Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install yt-dlp edge-tts google-api-python-client google-auth-oauthlib
+
+      - name: Download Viral Clips
+        run: |
+          # Grabs links from n8n and downloads the top 5
+          echo "${{ github.event.client_payload.urls }}" | tr ',' '\n' > links.txt
+          mkdir clips
+          yt-dlp -a links.txt -f "mp4" --max-downloads 5 --no-playlist -o "clips/%(id)s.%(ext)s"
+
+      - name: Generate AI Voiceover
+        run: |
+          # Microsoft AI Voice (Free)
+          edge-tts --text "Check out these hilarious animals! They are absolutely losing it today. Which one was your favorite?" --write-media vo.mp3
+
+      - name: Stitch & Standardize
+        run: |
+          # Force all videos to be Vertical 1080x1920 and 30fps
+          mkdir processed
+          for f in clips/*.mp4; do
+            ffmpeg -i "$f" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1" -r 30 -c:v libx264 -preset superfast -an "processed/${f##*/}"
+          done
+          
+          # Create the merge list
+          ls processed/*.mp4 | sed "s/^/file '/;s/$/'/" > list.txt
+          
+          # Combine everything with the voiceover
+          ffmpeg -f concat -safe 0 -i list.txt -i vo.mp3 -filter_complex "[0:a][1:a]amix=duration=shortest" -c:v libx264 -crf 23 -pix_fmt yuv420p final_video.mp4
+
+      - name: Post to YouTube
+        shell: python
+        env:
+          ID: ${{ secrets.YT_CLIENT_ID }}
+          SEC: ${{ secrets.YT_CLIENT_SECRET }}
+          TOK: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: |
+          import os
+          from googleapiclient.discovery import build
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.http import MediaFileUpload
+          creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
+          youtube = build("youtube", "v3", credentials=creds)
+          youtube.videos().insert(
+            part="snippet,status", 
+            body={"snippet": {"title": "Funny Animal Compilation #Shorts", "categoryId": "15"}, "status": {"privacyStatus": "public"}}, 
+            media_body=MediaFileUpload("final_video.mp4", chunksize=-1, resumable=True)
+          ).execute()
