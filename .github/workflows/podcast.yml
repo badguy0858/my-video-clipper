@@ -57,8 +57,8 @@ jobs:
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
               f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
               f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
-              f.write("Style: Main,Bebas Neue,100,&H00FFFFFF,&H00000000,1,4,2,860\n")
-              f.write("Style: Watermark,Bebas Neue,45,&H80FFFFFF,&H00000000,1,1,2,800\n\n")
+              f.write("Style: Main,Bebas Neue,100,&H00FFFFFF,&H00000000,1,4,2,910\n")
+              f.write("Style: Watermark,Bebas Neue,45,&H80FFFFFF,&H00000000,1,1,2,860\n\n")
               f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
               f.write("Dialogue: 0,0:00:00.00,0:00:58.00,Watermark,@Chikoslovakia\n")
               for segment in result['segments']:
@@ -76,7 +76,7 @@ jobs:
           "[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top]; \
            [1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; \
            [top][bottom]vstack=inputs=2,ass=klap_subs.ass[vfinal]; \
-           [2:a]volume=0.05[music]; \
+           [2:a]volume=0.03[music]; \
            [0:a][music]amix=inputs=2:duration=first:dropout_transition=2[afinal]" \
           -map "[vfinal]" -map "[afinal]" -c:v libx264 -crf 18 -c:a aac -t 58 output.mp4
 
