@@ -37,19 +37,20 @@ jobs:
           if [ "$MAX_START" -lt "1" ]; then START_TIME=0; else START_TIME=$(shuf -i 5-$MAX_START -n 1); fi
           ffmpeg -y -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
 
-      - name: AI Transcription & Content Generator
+     - name: AI Transcription & Content Generator
         shell: python
         run: |
           import whisper
           import re
           from collections import Counter
 
+          # 1. AI Transcription
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
           full_text = result['text'].upper()
 
-          # Generate Title
-          boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE"]
+          # 2. Generate AI Title
+          boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE", "SOME"]
           words = [w for w in re.findall(r'\w+', full_text) if w not in boring and len(w) > 3]
           most_common = [word for word, count in Counter(words).most_common(3)]
           if len(most_common) < 3: most_common = ["INSANE", "VIRAL", "MOMENT"]
@@ -58,13 +59,36 @@ jobs:
           with open("ai_content.txt", "w") as f:
               f.write(f"{ai_title}\nWait for the end! #Shorts #Podcast #Viral")
 
-          # Create Captions
+          # 3. Create FIXED Captions (Removing the ,0,0,0,, error)
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
-              f.write(f"[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\nStyle: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,4,2,480\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")
+              # Header Section
+              f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
+              f.write("[V4+ Styles]\n")
+              # This Format line defines exactly what fields we use
+              f.write("Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
+              # Style: Default font, Yellow Highlight (&H00FFFF), White secondary (&H00FFFFFF)
+              f.write("Style: Default,Bebas Neue,95,&H00FFFFFF,&H00000000,1,4,2,480\n\n")
+              
+              f.write("[Events]\n")
+              # THE FIX: Added Name, MarginL, MarginR, MarginV, Effect to the Format
+              f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+              
               for segment in result['segments']:
                   for w in segment.get('words', []):
-                      ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
-                      f.write(f"Dialogue: 0,{ts(w['start'])},{ts(w['end'])},Default,,0,0,0,,{{\\c&H00FFFF}}{w['word'].strip().upper()}{{\\r}}\n")
+                      start = w['start']
+                      end = w['end']
+                      text = w['word'].strip().upper()
+                      
+                      # Function to format time for .ass files
+                      def format_ts(s):
+                          td = int(s)
+                          m, s_rem = divmod(td, 60)
+                          h, m = divmod(m, 60)
+                          ms = int((s % 1) * 100)
+                          return f"{h}:{m:02d}:{s_rem:02d}.{ms:02d}"
+
+                      # Correctly formatted line with exactly 9 commas before the text
+                      f.write(f"Dialogue: 0,{format_ts(start)},{format_ts(end)},Default,,0,0,0,,{{\\c&H00FFFF}}{text}{{\\r}}\n")
 
       - name: Final Split-Screen Render
         run: |
