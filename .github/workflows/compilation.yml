@@ -1,4 +1,4 @@
-name: Auto Animal Compilation
+name: Reddit AI Animal Factory
 on:
   repository_dispatch:
     types: [trigger-compilation]
@@ -10,33 +10,48 @@ jobs:
       - name: Install Pro Tools
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
-          pip install yt-dlp edge-tts google-api-python-client google-auth-oauthlib
+          pip install yt-dlp edge-tts requests google-api-python-client google-auth-oauthlib
 
-      - name: Download Viral Clips
+      - name: Python Reddit Scout
+        shell: python
         run: |
-          # Grabs links from n8n and downloads the top 5
-          echo "${{ github.event.client_payload.urls }}" | tr ',' '\n' > links.txt
+          import requests
+          import os
+
+          # This searches Reddit for the top 10 video posts of the day
+          url = "https://www.reddit.com/r/AnimalsBeingDerps/top.json?t=day&limit=10"
+          headers = {'User-Agent': 'Mozilla/5.0'}
+          response = requests.get(url, headers=headers).json()
+          
+          video_links = []
+          for post in response['data']['children']:
+              data = post['data']
+              # We only want real videos
+              if data.get('is_video'):
+                  video_links.append(data['url'])
+          
+          # Save top 5 links to a file
+          with open("links.txt", "w") as f:
+              f.write("\n".join(video_links[:5]))
+          print(f"Found {len(video_links)} videos. Using top 5.")
+
+      - name: Download Videos
+        run: |
           mkdir clips
-          yt-dlp -a links.txt -f "mp4" --max-downloads 5 --no-playlist -o "clips/%(id)s.%(ext)s"
+          yt-dlp -a links.txt -f "mp4" --no-playlist -o "clips/%(id)s.%(ext)s"
 
       - name: Generate AI Voiceover
         run: |
-          # Microsoft AI Voice (Free)
-          edge-tts --text "Check out these hilarious animals! They are absolutely losing it today. Which one was your favorite?" --write-media vo.mp3
+          edge-tts --text "These animals are having a wild day! Stick around to see the funniest clip at the end. Don't forget to subscribe!" --write-media vo.mp3
 
-      - name: Stitch & Standardize
+      - name: Stitch & Standardize (Vertical 9:16)
         run: |
-          # Force all videos to be Vertical 1080x1920 and 30fps
           mkdir processed
           for f in clips/*.mp4; do
             ffmpeg -i "$f" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1" -r 30 -c:v libx264 -preset superfast -an "processed/${f##*/}"
           done
-          
-          # Create the merge list
           ls processed/*.mp4 | sed "s/^/file '/;s/$/'/" > list.txt
-          
-          # Combine everything with the voiceover
-          ffmpeg -f concat -safe 0 -i list.txt -i vo.mp3 -filter_complex "[0:a][1:a]amix=duration=shortest" -c:v libx264 -crf 23 -pix_fmt yuv420p final_video.mp4
+          ffmpeg -f concat -safe 0 -i list.txt -i vo.mp3 -filter_complex "[0:a][1:a]amix=duration=shortest" -c:v libx264 -crf 23 final_comp.mp4
 
       - name: Post to YouTube
         shell: python
@@ -53,6 +68,12 @@ jobs:
           youtube = build("youtube", "v3", credentials=creds)
           youtube.videos().insert(
             part="snippet,status", 
-            body={"snippet": {"title": "Funny Animal Compilation #Shorts", "categoryId": "15"}, "status": {"privacyStatus": "public"}}, 
-            media_body=MediaFileUpload("final_video.mp4", chunksize=-1, resumable=True)
+            body={"snippet": {"title": "Funny Animals Being Derps! 😂 #Shorts", "categoryId": "15"}, "status": {"privacyStatus": "public"}}, 
+            media_body=MediaFileUpload("final_comp.mp4", chunksize=-1, resumable=True)
           ).execute()
+
+      - name: Backup (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-reddit-video
+          path: final_comp.mp4
