@@ -76,7 +76,7 @@ jobs:
           "[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top]; \
            [1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; \
            [top][bottom]vstack=inputs=2,ass=klap_subs.ass[vfinal]; \
-           [2:a]volume=0.15[music]; \
+           [2:a]volume=0.05[music]; \
            [0:a][music]amix=inputs=2:duration=first:dropout_transition=2[afinal]" \
           -map "[vfinal]" -map "[afinal]" -c:v libx264 -crf 18 -c:a aac -t 58 output.mp4
 
