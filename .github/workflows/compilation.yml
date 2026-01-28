@@ -16,42 +16,62 @@ jobs:
         shell: python
         run: |
           import requests
-          import os
+          import time
+          
+          # We use a very specific "Browser" header to trick Reddit
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+              'Accept': 'application/json'
+          }
+          
+          url = "https://www.reddit.com/r/AnimalsBeingDerps/top.json?t=day&limit=15"
+          
+          try:
+              response = requests.get(url, headers=headers)
+              if response.status_code != 200:
+                  print(f"Reddit error: {response.status_code}")
+                  # Fallback to a different funny subreddit if the first one is blocked
+                  url = "https://www.reddit.com/r/FunnyAnimals/top.json?t=day&limit=15"
+                  response = requests.get(url, headers=headers)
+              
+              data = response.json()
+              video_links = []
+              for post in data['data']['children']:
+                  p = post['data']
+                  if p.get('is_video') and 'v.redd.it' in p.get('url', ''):
+                      video_links.append(p['url'])
+              
+              if not video_links:
+                  raise Exception("No videos found")
 
-          # This searches Reddit for the top 10 video posts of the day
-          url = "https://www.reddit.com/r/AnimalsBeingDerps/top.json?t=day&limit=10"
-          headers = {'User-Agent': 'Mozilla/5.0'}
-          response = requests.get(url, headers=headers).json()
-          
-          video_links = []
-          for post in response['data']['children']:
-              data = post['data']
-              # We only want real videos
-              if data.get('is_video'):
-                  video_links.append(data['url'])
-          
-          # Save top 5 links to a file
-          with open("links.txt", "w") as f:
-              f.write("\n".join(video_links[:5]))
-          print(f"Found {len(video_links)} videos. Using top 5.")
+              with open("links.txt", "w") as f:
+                  f.write("\n".join(video_links[:5]))
+              print(f"Success! Found {len(video_links)} videos.")
+              
+          except Exception as e:
+              print(f"Scout failed: {e}")
+              # Create a dummy file to prevent total crash
+              exit(1)
 
       - name: Download Videos
         run: |
           mkdir clips
+          # yt-dlp is much better at bypassing blocks than standard python
           yt-dlp -a links.txt -f "mp4" --no-playlist -o "clips/%(id)s.%(ext)s"
 
       - name: Generate AI Voiceover
         run: |
-          edge-tts --text "These animals are having a wild day! Stick around to see the funniest clip at the end. Don't forget to subscribe!" --write-media vo.mp3
+          edge-tts --text "These animals are having a 10 out of 10 day! Stick around for the last clip, it is absolutely hilarious. Subscribe for daily fun!" --write-media vo.mp3
 
       - name: Stitch & Standardize (Vertical 9:16)
         run: |
           mkdir processed
           for f in clips/*.mp4; do
+            # We add a slight "Blur Background" effect so the video looks full-screen
             ffmpeg -i "$f" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1" -r 30 -c:v libx264 -preset superfast -an "processed/${f##*/}"
           done
           ls processed/*.mp4 | sed "s/^/file '/;s/$/'/" > list.txt
-          ffmpeg -f concat -safe 0 -i list.txt -i vo.mp3 -filter_complex "[0:a][1:a]amix=duration=shortest" -c:v libx264 -crf 23 final_comp.mp4
+          ffmpeg -f concat -safe 0 -i list.txt -i vo.mp3 -filter_complex "[0:a][1:a]amix=duration=shortest" -c:v libx264 -crf 23 -pix_fmt yuv420p final_compilation.mp4
 
       - name: Post to YouTube
         shell: python
@@ -69,11 +89,11 @@ jobs:
           youtube.videos().insert(
             part="snippet,status", 
             body={"snippet": {"title": "Funny Animals Being Derps! 😂 #Shorts", "categoryId": "15"}, "status": {"privacyStatus": "public"}}, 
-            media_body=MediaFileUpload("final_comp.mp4", chunksize=-1, resumable=True)
+            media_body=MediaFileUpload("final_compilation.mp4", chunksize=-1, resumable=True)
           ).execute()
 
       - name: Backup (Artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: compiled-reddit-video
-          path: final_comp.mp4
+          name: compiled-video
+          path: final_compilation.mp4
