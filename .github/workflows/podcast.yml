@@ -23,52 +23,70 @@ jobs:
       - name: Download Assets from Drive
         run: |
           gdown --id "${{ github.event.client_payload.file_id }}" -O raw_input.mp4
-          gdown --id "${{ github.event.client_payload.satisfying_id }}" -O satisfying.mp4
+          gdown --id "${{ github.event.client_payload.satisfying_id }}" -O satisfying_full.mp4
           gdown --id "${{ github.event.client_payload.music_id }}" -O bg_music.mp3
-          ls -lh raw_input.mp4 satisfying.mp4 bg_music.mp3
 
-      - name: AI Smart Random Cut
+      - name: Pick Random Start Times (Main & Background)
         run: |
-          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
-          DUR_INT=$(printf "%.0f" $DURATION)
-          MAX_START=$(($DUR_INT - 65))
-          if [ "$MAX_START" -lt "1" ]; then START_TIME=0; else START_TIME=$(shuf -i 5-$MAX_START -n 1); fi
-          ffmpeg -y -ss $START_TIME -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
+          # Randomize Main Video
+          DUR_MAIN=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_input.mp4)
+          MAX_START_MAIN=$(echo "$DUR_MAIN - 65" | bc | cut -d'.' -f1)
+          START_MAIN=$(shuf -i 5-$MAX_START_MAIN -n 1)
+          echo "START_MAIN=$START_MAIN" >> $GITHUB_ENV
 
-      - name: AI Transcription & Content Generator
+          # Randomize Satisfying Background
+          DUR_BG=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 satisfying_full.mp4)
+          MAX_START_BG=$(echo "$DUR_BG - 65" | bc | cut -d'.' -f1)
+          START_BG=$(shuf -i 0-$MAX_START_BG -n 1)
+          echo "START_BG=$START_BG" >> $GITHUB_ENV
+
+      - name: Extract Clips
+        run: |
+          # Clip the main video
+          ffmpeg -y -ss ${{ env.START_MAIN }} -t 58 -i raw_input.mp4 -c:v libx264 -crf 18 -c:a aac input_clip.mp4
+          # Clip the satisfying background starting from a random point
+          ffmpeg -y -ss ${{ env.START_BG }} -t 58 -i satisfying_full.mp4 -c:v libx264 -crf 18 -an satisfying.mp4
+
+      - name: AI Transcription with Random Highlighting
         shell: python
         run: |
           import whisper
-          import re
-          from collections import Counter
-
+          import random
+          
           model = whisper.load_model("base")
           result = model.transcribe("input_clip.mp4", word_timestamps=True)
-          full_text = result['text'].upper()
-
-          boring = ["THE", "AND", "YOU", "THAT", "THIS", "WITH", "FOR", "WAS", "HAVE"]
-          words = [w for w in re.findall(r'\w+', full_text) if w not in boring and len(w) > 3]
-          most_common = [word for word, count in Counter(words).most_common(3)]
-          ai_title = " ".join(most_common) if len(most_common) >= 3 else "VIRAL MOMENT"
           
-          with open("ai_content.txt", "w") as f:
-              f.write(f"{ai_title}\nWait for the end! #Shorts #Podcast #Viral")
+          # User requested choice: Yellow, Brown, or Purple (ASS hex format)
+          # Yellow: &H00FFFF, Brown: &H2A2AA5, Purple/Violet: &H822D94
+          high_colors = ["&H00FFFF", "&H2A2AA5", "&H822D94"]
+          h_color = random.choice(high_colors)
+          
+          # Watermark is Brown as requested
+          watermark_color = "&H2A2AA5" 
 
           with open("klap_subs.ass", "w", encoding="utf-8") as f:
               f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n")
               f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Alignment, MarginV\n")
-              f.write("Style: Main,Bebas Neue,100,&H00FFFFFF,&H00000000,1,4,2,910\n")
-              f.write("Style: Watermark,Bebas Neue,45,&H80FFFFFF,&H00000000,1,1,2,860\n\n")
+              # MarginV 910 puts it right on the center split line
+              f.write(f"Style: Main,Bebas Neue,100,&H00FFFFFF,&H00000000,1,4,2,910\n")
+              f.write(f"Style: Watermark,Bebas Neue,45,{watermark_color},&H00000000,1,1,2,860\n\n")
               f.write("[Events]\nFormat: Layer, Start, End, Style, Text\n")
-              f.write("Dialogue: 0,0:00:00.00,0:00:58.00,Watermark,@Chikoslovakia\n")
+              f.write("Dialogue: 0,0:00:00.00,0:00:58.00,Watermark,{\\pos(540,840)}@Chikoslovakia\n")
+              
               for segment in result['segments']:
-                  for w in segment.get('words', []):
-                      def fmt_t(s):
-                          m, s_rem = divmod(s, 60)
-                          h, m = divmod(m, 60)
-                          return f"{int(h)}:{int(m):02d}:{s_rem:05.2f}"
-                      word_text = w['word'].strip().upper()
-                      f.write(f"Dialogue: 0,{fmt_t(w['start'])},{fmt_t(w['end'])},Main,{{\\c&H00FFFF}}{word_text}{{\\r}}\n")
+                  words = segment.get('words', [])
+                  for i in range(len(words)):
+                      start, end = words[i]['start'], words[i]['end']
+                      # Window logic: Active word + next 2
+                      window = words[i:min(i+3, len(words))]
+                      line = []
+                      for j, w in enumerate(window):
+                          t = w['word'].strip().upper()
+                          if j == 0: line.append(f"{{\\c{h_color}\\fscx110\\fscy110}}{t}{{\\r}}")
+                          else: line.append(t)
+                      
+                      ts = lambda s: f"{int(s//3600)}:{int((s%3600)//60):02d}:{s%60:05.2f}"
+                      f.write(f"Dialogue: 0,{ts(start)},{ts(end)},Main,{' '.join(line)}\n")
 
       - name: Final Split-Screen Render (With Music Mix)
         run: |
@@ -76,9 +94,21 @@ jobs:
           "[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top]; \
            [1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; \
            [top][bottom]vstack=inputs=2,ass=klap_subs.ass[vfinal]; \
-           [2:a]volume=0.03[music]; \
+           [2:a]volume=0.04[music]; \
            [0:a][music]amix=inputs=2:duration=first:dropout_transition=2[afinal]" \
           -map "[vfinal]" -map "[afinal]" -c:v libx264 -crf 18 -c:a aac -t 58 output.mp4
+
+      - name: AI Content Metadata Generator
+        shell: python
+        run: |
+          # Creates a 3-word title based on the filename
+          import os
+          raw_title = os.environ.get('VIDEO_TITLE', 'VIRAL PODCAST')
+          clean_title = " ".join(raw_title.split()[:3]).upper()
+          with open("ai_content.txt", "w") as f:
+              f.write(f"{clean_title}\nWait for the end! #Shorts #Podcast #Viral")
+        env:
+          VIDEO_TITLE: ${{ github.event.client_payload.video_title }}
 
       - name: Post to YouTube
         shell: python
@@ -99,20 +129,18 @@ jobs:
           creds = Credentials(None, refresh_token=os.environ['TOK'], client_id=os.environ['ID'], client_secret=os.environ['SEC'], token_uri="https://oauth2.googleapis.com/token")
           youtube = build("youtube", "v3", credentials=creds)
           
-          # UPLOAD WITH FIXED SETTINGS
           youtube.videos().insert(
               part="snippet,status",
               body={
-                  "snippet": {
-                      "title": yt_title, 
-                      "description": yt_desc, 
-                      "categoryId": "24"
-                  }, 
-                  "status": {
-                      "privacyStatus": "public",
-                      "selfDeclaredMadeForKids": False, # FIX: Sets "No, it's not made for kids"
-                  }
+                  "snippet": {"title": yt_title, "description": yt_desc, "categoryId": "24"}, 
+                  "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
               },
               media_body=MediaFileUpload("output.mp4", chunksize=-1, resumable=True)
           ).execute()
-          print("SUCCESS: Uploaded with correct metadata settings!")
+          print("SUCCESS: Uploaded!")
+
+      - name: Upload Artifact (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: viral-podcast-video
+          path: output.mp4
