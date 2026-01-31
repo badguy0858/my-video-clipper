@@ -1,4 +1,4 @@
-name: Neil-Style Viral Clipper
+name: Neil-Style Smart Clipper (Gemini)
 on:
   repository_dispatch:
     types: [clip-video]
@@ -6,13 +6,13 @@ on:
 jobs:
   clip:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     steps:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' 
+          python-version: '3.10'
 
       - name: Setup FFmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
@@ -22,35 +22,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl1 libglib2.0-0 fonts-liberation
           pip install --upgrade pip
-          # CRITICAL FIX: Pin protobuf to 3.20.3 to make MediaPipe Face Tracking work
+          # Fix for Face Tracking
           pip install "protobuf==3.20.3"
-          pip install gdown faster-whisper mediapipe opencv-python-headless \
-            yake requests numpy textblob google-auth google-auth-oauthlib \
-            google-api-python-client
+          # Added google-generativeai for Gemini
+          pip install gdown faster-whisper mediapipe opencv-python-headless google-generativeai
           
           mkdir -p ~/.fonts
           wget -q -O ~/.fonts/Montserrat-Bold.ttf \
             "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" || true
           fc-cache -f || true
 
-      - name: Download Video from Drive
+      - name: Download Video
         run: |
           FILE_ID="${{ github.event.client_payload.file_id }}"
           echo "Downloading: $FILE_ID"
-          # Try normal download, failover to fuzzy
           gdown "https://drive.google.com/uc?id=${FILE_ID}" -O raw_input.mp4 || \
           gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}/view" -O raw_input.mp4
           
-          # Clean audio to prevent errors
-          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k -ar 44100 input.mp4 \
-            2>/dev/null || cp raw_input.mp4 input.mp4
-          
+          # Standardize video to prevent encoding errors
+          ffmpeg -y -i raw_input.mp4 -c:v libx264 -preset fast -crf 24 -c:a aac -b:a 128k -ar 44100 input.mp4
           ls -lh input.mp4
 
-      - name: Run Viral Clipper Pipeline
+      - name: Run Gemini Smart Clipper
         shell: python
         env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
           CHANNEL_TYPE: ${{ github.event.client_payload.channel_type }}
         run: |
           import os
@@ -60,266 +57,211 @@ jobs:
           import numpy as np
           import mediapipe as mp
           from faster_whisper import WhisperModel
-          import yake
-          import requests
-          from textblob import TextBlob
-          import re
-          from pathlib import Path
+          import google.generativeai as genai
+          import glob
           
-          # ============================================================
-          # CONFIGURATION
-          # ============================================================
-          
+          # --- CONFIG ---
           INPUT_VIDEO = "input.mp4"
           OUTPUT_DIR = "clips"
-          CLIP_DURATION = (45, 65)
-          MAX_CLIPS = 5
+          MAX_CLIPS = 1 # Only 1 clip as requested
           
-          PEXELS_API = os.environ.get("PEXELS_API_KEY", "")
+          # Style Config
           CHANNEL = os.environ.get("CHANNEL_TYPE", "science")
-          
           STYLES = {
-              "science": {
-                  "highlight_color": "&H00FFFF00", # Yellow
-                  "font_size": 80,
-                  "emoji_map": {
-                      "universe": "\U0001F30C", "space": "\U0001F680", "star": "\U00002B50",
-                      "sun": "\U00002600", "moon": "\U0001F319", "earth": "\U0001F30D",
-                      "science": "\U0001F52C", "brain": "\U0001F9E0", "atom": "\U0000269B",
-                      "fire": "\U0001F525", "mind": "\U0001F4A1", "crazy": "\U0001F92F"
-                  }
-              },
-              "podcast": {
-                  "highlight_color": "&H0000FFFF", # Yellow/Gold
-                  "font_size": 75,
-                  "emoji_map": {
-                      "money": "\U0001F4B0", "success": "\U0001F3C6", "life": "\U0001F331",
-                      "love": "\U00002764", "truth": "\U0001F4AF", "secret": "\U0001F510"
-                  }
-              },
-              "motivation": {
-                  "highlight_color": "&H000080FF", # Orange
-                  "font_size": 78,
-                  "emoji_map": {
-                      "win": "\U0001F3C6", "strong": "\U0001F4AA", "fire": "\U0001F525",
-                      "king": "\U0001F451", "goal": "\U0001F3AF", "dream": "\U0001F31F"
-                  }
-              }
+              "science": {"color": "&H00FFFF00", "font": 80}, # Yellow
+              "podcast": {"color": "&H0000FFFF", "font": 75}, # Gold
+              "motivation": {"color": "&H000080FF", "font": 78} # Orange
           }
-          
           style = STYLES.get(CHANNEL, STYLES["science"])
+          
           os.makedirs(OUTPUT_DIR, exist_ok=True)
           
-          # ============================================================
-          # STEP 1: TRANSCRIBE
-          # ============================================================
-          print("STEP 1: Transcribing...")
-          model = WhisperModel("medium", compute_type="int8") # Switched to Medium for better accuracy
+          # --- STEP 1: WHISPER TRANSCRIPTION ---
+          print("🔊 Step 1: Transcribing...")
+          model = WhisperModel("medium", compute_type="int8")
           segments, info = model.transcribe(INPUT_VIDEO, word_timestamps=True)
           
-          transcript = []
-          for segment in segments:
-              for word in segment.words:
-                  transcript.append({
+          transcript_data = []
+          full_text_with_timestamps = ""
+          
+          for seg in segments:
+              # Format: [00:12] Text...
+              timestamp = int(seg.start)
+              time_str = f"[{timestamp}s]"
+              full_text_with_timestamps += f"{time_str} {seg.text}\n"
+              
+              for word in seg.words:
+                  transcript_data.append({
                       "text": word.word.strip(),
                       "start": word.start,
                       "end": word.end
                   })
           
-          print(f"Transcribed {len(transcript)} words")
+          # Limit context for Gemini (First 20 mins approx to prevent token errors)
+          truncated_text = full_text_with_timestamps[:30000]
           
-          # ============================================================
-          # STEP 2: FIND HOOKS
-          # ============================================================
-          print("STEP 2: Finding Hooks...")
-          HOOK_PATTERNS = [
-              r"did you know", r"what if", r"have you ever", r"why do",
-              r"the truth is", r"actually", r"here's the thing",
-              r"most people don't", r"nobody tells you", r"imagine",
-              r"think about this", r"let me tell you"
-          ]
+          # --- STEP 2: GEMINI HOOK FINDER ---
+          print("🧠 Step 2: Gemini AI Analysis...")
+          genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+          gemini = genai.GenerativeModel('gemini-pro')
           
-          full_text = " ".join([w["text"] for w in transcript])
-          sentences = re.split(r'(?<=[.!?]) +', full_text)
+          prompt = f"""
+          You are a viral video editor for TikTok/Shorts.
+          Analyze this transcript. Find the ONE absolute most viral, engaging hook segment (30 to 55 seconds long).
+          It must stand alone (have a clear start and end topic).
           
-          potential_starts = []
-          current_time = 0
+          TRANSCRIPT:
+          {truncated_text}
           
-          # Map sentences back to timestamps roughly
-          word_idx = 0
-          for sentence in sentences:
-              if word_idx >= len(transcript): break
-              start_t = transcript[word_idx]["start"]
-              
-              score = 0
-              if sentence.strip().endswith('?'): score += 3
-              for pattern in HOOK_PATTERNS:
-                  if re.search(pattern, sentence, re.IGNORECASE):
-                      score += 5
-              
-              if score > 0:
-                  potential_starts.append({"start": start_t, "score": score, "text": sentence})
-              
-              word_idx += len(sentence.split())
+          Return ONLY valid JSON:
+          {{
+            "start_time": <integer_seconds>,
+            "end_time": <integer_seconds>,
+            "reason": "<why_is_this_viral>"
+          }}
+          """
           
-          potential_starts.sort(key=lambda x: x["score"], reverse=True)
-          if not potential_starts:
-              potential_starts.append({"start": 0, "score": 1, "text": "Start"})
-              
-          # ============================================================
-          # STEP 3: CREATE CLIPS
-          # ============================================================
-          print("STEP 3: Creating Clips...")
-          clips = []
-          used_times = []
-          
-          probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', INPUT_VIDEO], capture_output=True, text=True)
-          duration = float(json.loads(probe.stdout)['format']['duration'])
-          
-          for hook in potential_starts:
-              start = hook["start"]
-              end = min(start + 59, duration) # 59 seconds max for Shorts
-              
-              # Check overlap
-              is_overlap = False
-              for u_s, u_e in used_times:
-                  if not (end < u_s or start > u_e):
-                      is_overlap = True
-                      break
-              
-              if not is_overlap and (end - start > 15):
-                  clips.append({"start": start, "end": end, "text": hook["text"]})
-                  used_times.append((start, end))
-                  if len(clips) >= MAX_CLIPS: break
-                  
-          if not clips:
-              clips.append({"start": 0, "end": min(59, duration), "text": "Full"})
+          try:
+              response = gemini.generate_content(prompt)
+              # Clean response text to ensure JSON
+              clean_json = response.text.replace('```json', '').replace('```', '').strip()
+              clip_data = json.loads(clean_json)
+              print(f"🎯 AI Selected: {clip_data}")
+          except Exception as e:
+              print(f"❌ Gemini Error: {e}. Using fallback.")
+              clip_data = {"start_time": 0, "end_time": 58, "reason": "Fallback"}
 
-          # ============================================================
-          # STEP 4: PROCESS & FACE TRACK
-          # ============================================================
-          print("STEP 4: Processing...")
+          start_t = float(clip_data.get("start_time", 0))
+          end_t = float(clip_data.get("end_time", 58))
           
-          for idx, clip in enumerate(clips):
-              print(f"Processing Clip {idx+1}...")
-              clip_name = f"clip_{idx+1}"
-              temp_file = f"{OUTPUT_DIR}/{clip_name}_temp.mp4"
-              final_file = f"{OUTPUT_DIR}/{clip_name}_final.mp4"
+          # Ensure duration is valid
+          if end_t - start_t < 15: end_t = start_t + 30
+          if end_t - start_t > 59: end_t = start_t + 59
+          
+          # --- STEP 3: EXTRACT & FACE TRACK ---
+          print("🎥 Step 3: Processing Video...")
+          
+          clip_name = "final_viral_clip"
+          temp_file = f"{OUTPUT_DIR}/{clip_name}_temp.mp4"
+          final_file = f"{OUTPUT_DIR}/{clip_name}.mp4"
+          
+          # Extract Raw Segment
+          subprocess.run([
+              'ffmpeg', '-y', '-ss', str(start_t), '-t', str(end_t - start_t),
+              '-i', INPUT_VIDEO, '-c:v', 'libx264', '-c:a', 'aac', temp_file
+          ], check=True)
+          
+          # Smart Face Tracking (Prioritize Largest Face)
+          try:
+              cap = cv2.VideoCapture(temp_file)
+              width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+              height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
               
-              # Extract
-              subprocess.run([
-                  'ffmpeg', '-y', '-ss', str(clip['start']), '-t', str(clip['end'] - clip['start']),
-                  '-i', INPUT_VIDEO, '-c:v', 'libx264', '-c:a', 'aac', temp_file
-              ], check=True)
+              target_w = int(height * 9 / 16)
+              if target_w > width: target_w = width
               
-              # Face Tracking
-              try:
-                  cap = cv2.VideoCapture(temp_file)
-                  width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                  height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+              mp_face = mp.solutions.face_detection
+              detector = mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.6)
+              
+              x_positions = []
+              
+              while True:
+                  ret, frame = cap.read()
+                  if not ret: break
                   
-                  # Target 9:16
-                  target_w = int(height * 9 / 16)
-                  if target_w > width: target_w = width
+                  img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                  results = detector.process(img_rgb)
                   
-                  mp_face = mp.solutions.face_detection
-                  face_detection = mp_face.FaceDetection(min_detection_confidence=0.5)
+                  frame_center = width // 2
                   
-                  x_centers = []
-                  while True:
-                      ret, frame = cap.read()
-                      if not ret: break
+                  if results.detections:
+                      # LOGIC: Find the largest face (Width * Height)
+                      largest_face = None
+                      max_area = 0
                       
-                      # Only process every 5th frame for speed
-                      if int(cap.get(cv2.CAP_PROP_POS_FRAMES)) % 5 != 0: continue
+                      for detection in results.detections:
+                          bbox = detection.location_data.relative_bounding_box
+                          area = bbox.width * bbox.height
+                          if area > max_area:
+                              max_area = area
+                              largest_face = detection
                       
-                      rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                      results = face_detection.process(rgb)
-                      
-                      if results.detections:
-                          for detection in results.detections:
-                              bbox = detection.location_data.relative_bounding_box
-                              x_center = bbox.xmin + (bbox.width / 2)
-                              x_centers.append(x_center * width)
-                              break # Only track first face
+                      if largest_face:
+                          bbox = largest_face.location_data.relative_bounding_box
+                          # Calculate center of the largest face
+                          face_x = (bbox.xmin + (bbox.width / 2)) * width
+                          x_positions.append(face_x)
                       else:
-                          x_centers.append(width / 2) # Default center
-                          
-                  cap.release()
-                  
-                  # Smooth camera movement
-                  if x_centers:
-                      avg_x = int(sum(x_centers) / len(x_centers))
+                          x_positions.append(frame_center)
                   else:
-                      avg_x = width // 2
+                      x_positions.append(frame_center)
                       
-                  # Calculate crop x
-                  crop_x = max(0, min(width - target_w, avg_x - (target_w // 2)))
-                  crop_filter = f"crop={target_w}:{height}:{crop_x}:0,scale=1080:1920"
+              cap.release()
+              
+              # Smooth the movement (Running Average) to prevent jitter
+              if x_positions:
+                  window_size = 15 # Frames to average
+                  smoothed_x = np.convolve(x_positions, np.ones(window_size)/window_size, mode='valid')
+                  avg_x = int(np.mean(smoothed_x) if len(smoothed_x) > 0 else width // 2)
+              else:
+                  avg_x = width // 2
                   
-              except Exception as e:
-                  print(f"Face tracking failed: {e}, using center crop")
-                  crop_filter = "crop=ih*(9/16):ih,scale=1080:1920"
-
-              # Generate ASS Subtitles
-              ass_path = f"{OUTPUT_DIR}/{clip_name}.ass"
-              ass_content = f"""[Script Info]
-              ScriptType: v4.00+
-              PlayResX: 1080
-              PlayResY: 1920
+              crop_x = max(0, min(width - target_w, int(avg_x - (target_w / 2))))
+              crop_filter = f"crop={target_w}:{height}:{crop_x}:0,scale=1080:1920"
+              print(f"✅ Tracking Center X: {avg_x}")
               
-              [V4+ Styles]
-              Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, BorderStyle, Outline, Shadow, Alignment, MarginV
-              Style: Default,Montserrat Bold,{style['font_size']},{style['highlight_color'].replace('&H', '&H00')},&H00000000,&H80000000,-1,1,3,0,2,350
+          except Exception as e:
+              print(f"⚠️ Tracking failed: {e}. Center crop.")
+              crop_filter = "crop=ih*(9/16):ih,scale=1080:1920"
+
+          # --- STEP 4: CAPTIONS ---
+          print("✍️ Step 4: Burning Captions...")
+          ass_path = f"{OUTPUT_DIR}/subs.ass"
+          
+          # Create ASS Header
+          ass_header = f"""[Script Info]
+          ScriptType: v4.00+
+          PlayResX: 1080
+          PlayResY: 1920
+          [V4+ Styles]
+          Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, BorderStyle, Outline, Shadow, Alignment, MarginV
+          Style: Default,Montserrat Bold,{style['font']},{style['color'].replace('&H', '&H00')},&H00000000,&H80000000,-1,1,3,0,2,350
+          [Events]
+          Format: Layer, Start, End, Style, Text
+          """
+          
+          subs_lines = []
+          for w in transcript_data:
+              if w['start'] >= start_t and w['end'] <= end_t:
+                  s_rel = w['start'] - start_t
+                  e_rel = w['end'] - start_t
+                  
+                  def ts(s):
+                      h, r = divmod(s, 3600)
+                      m, sec = divmod(r, 60)
+                      return f"{int(h)}:{int(m):02}:{sec:05.2f}"
+                  
+                  word_text = w['text'].upper()
+                  # Active word color hack
+                  line = f"Dialogue: 0,{ts(s_rel)},{ts(e_rel)},Default,{{\\c{style['color']}}}{word_text}"
+                  subs_lines.append(line)
+                  
+          with open(ass_path, "w") as f:
+              f.write(ass_header + "\n".join(subs_lines))
               
-              [Events]
-              Format: Layer, Start, End, Style, Text
-              """
-              
-              def fmt_time(s):
-                  h, r = divmod(s, 3600); m, sec = divmod(r, 60)
-                  return f"{int(h)}:{int(m):02}:{sec:05.2f}"
+          # Render
+          subprocess.run([
+              'ffmpeg', '-y', '-i', temp_file, '-vf', f"{crop_filter},subtitles={ass_path}",
+              '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', final_file
+          ], check=True)
+          
+          print(f"🎉 Created: {final_file}")
 
-              for w in transcript:
-                  if w['start'] >= clip['start'] and w['end'] <= clip['end']:
-                      # Relative time
-                      s_rel = w['start'] - clip['start']
-                      e_rel = w['end'] - clip['start']
-                      if s_rel < 0: continue
-                      
-                      clean_word = w['text'].upper()
-                      
-                      # Emoji Logic
-                      emoji = ""
-                      for key, val in style['emoji_map'].items():
-                          if key.upper() in clean_word:
-                              emoji = f" {val}"
-                              
-                      # Highlighting Logic: Active word is Yellow/Color, others White
-                      # We actually perform word-level highlighting by "Karaoke" style or single word display
-                      # For "Alex Hormozi" style, we usually show 2-3 words, but let's do simple word-by-word pop
-                      
-                      line = f"Dialogue: 0,{fmt_time(s_rel)},{fmt_time(e_rel)},Default,{{\\c{style['highlight_color']}}}{clean_word}{emoji}"
-                      ass_content += line + "\n"
-
-              with open(ass_path, "w") as f:
-                  f.write(ass_content)
-
-              # Render Final
-              print("Rendering...")
-              subprocess.run([
-                  'ffmpeg', '-y', '-i', temp_file, '-vf', f"{crop_filter},subtitles={ass_path}",
-                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', final_file
-              ], check=True)
-              
-              print(f"Done: {final_file}")
-
-      - name: Upload Clips Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: viral-clips-${{ github.run_id }}
-          path: clips/*_final.mp4
-          retention-days: 7
+          name: GEMINI-CLIP
+          path: clips/*.mp4
 
       - name: Upload to YouTube
         if: ${{ github.event.client_payload.auto_upload == 'true' }}
@@ -327,11 +269,8 @@ jobs:
         shell: python
         env:
           YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
-          CHANNEL_TYPE: ${{ github.event.client_payload.channel_type }}
         run: |
-          import os
-          import json
-          import glob
+          import os, json, glob
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
@@ -340,29 +279,17 @@ jobs:
           if not creds_json: exit(0)
           
           creds = json.loads(creds_json)
-          credentials = Credentials(
-              token=None,
-              refresh_token=creds['refresh_token'],
+          credentials = Credentials(token=None, refresh_token=creds['refresh_token'],
               token_uri="https://oauth2.googleapis.com/token",
-              client_id=creds['client_id'],
-              client_secret=creds['client_secret']
-          )
+              client_id=creds['client_id'], client_secret=creds['client_secret'])
           
           youtube = build('youtube', 'v3', credentials=credentials)
-          clips = sorted(glob.glob("clips/*_final.mp4"))
+          clip = glob.glob("clips/*.mp4")[0]
           
-          for clip in clips:
-              print(f"Uploading {clip}...")
-              body = {
-                  "snippet": {
-                      "title": "Amazing Fact! 🤯 #shorts",
-                      "description": "Subscribe for more science! #shorts #viral",
-                      "categoryId": "22"
-                  },
-                  "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
-              }
-              youtube.videos().insert(
-                  part="snippet,status",
-                  body=body,
-                  media_body=MediaFileUpload(clip, resumable=True)
-              ).execute()
+          body = {
+              "snippet": {"title": "Viral Hook 🧠 #shorts", "categoryId": "22"},
+              "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
+          }
+          youtube.videos().insert(part="snippet,status", body=body,
+              media_body=MediaFileUpload(clip, resumable=True)).execute()
+          print("✅ Uploaded to YouTube")
