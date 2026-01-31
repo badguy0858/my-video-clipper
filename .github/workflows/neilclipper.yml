@@ -1,0 +1,714 @@
+name: Neil-Style Viral Clipper
+on:
+  repository_dispatch:
+    types: [clip-video]
+
+jobs:
+  clip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Setup FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-glx libglib2.0-0 fonts-liberation
+          pip install --upgrade pip
+          pip install gdown faster-whisper mediapipe opencv-python-headless \
+            yake requests numpy textblob google-auth google-auth-oauthlib \
+            google-api-python-client
+          
+          # Download font
+          mkdir -p ~/.fonts
+          wget -q -O ~/.fonts/Montserrat-Bold.ttf \
+            "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf"
+          fc-cache -f
+
+      - name: Download Video from Drive
+        run: |
+          FILE_ID="${{ github.event.client_payload.file_id }}"
+          echo "Downloading: $FILE_ID"
+          gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}/view" -O raw_input.mp4 \
+            || gdown "$FILE_ID" -O raw_input.mp4
+          
+          # Fix audio
+          ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k -ar 44100 input.mp4 \
+            2>/dev/null || cp raw_input.mp4 input.mp4
+          
+          ls -lh input.mp4
+
+      - name: Run Viral Clipper Pipeline
+        shell: python
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          CHANNEL_TYPE: ${{ github.event.client_payload.channel_type }}
+        run: |
+          import os
+          import json
+          import subprocess
+          import cv2
+          import numpy as np
+          import mediapipe as mp
+          from faster_whisper import WhisperModel
+          import yake
+          import requests
+          from textblob import TextBlob
+          import re
+          from pathlib import Path
+          
+          # ============================================================
+          # CONFIGURATION
+          # ============================================================
+          
+          INPUT_VIDEO = "input.mp4"
+          OUTPUT_DIR = "clips"
+          CLIP_DURATION = (45, 65)  # Min/max clip length in seconds
+          MAX_CLIPS = 5
+          
+          PEXELS_API = os.environ.get("PEXELS_API_KEY", "")
+          CHANNEL = os.environ.get("CHANNEL_TYPE", "science")
+          
+          # Style config per channel
+          STYLES = {
+              "science": {
+                  "highlight_color": "&H00FFFF00",  # Cyan
+                  "font_size": 72,
+                  "emoji_map": {
+                      "universe": "\U0001F30C", "space": "\U0001F680", "star": "\U00002B50",
+                      "sun": "\U00002600", "moon": "\U0001F319", "earth": "\U0001F30D",
+                      "science": "\U0001F52C", "brain": "\U0001F9E0", "atom": "\U0000269B",
+                      "fire": "\U0001F525", "mind": "\U0001F4A1", "crazy": "\U0001F92F"
+                  }
+              },
+              "podcast": {
+                  "highlight_color": "&H0000FFFF",  # Yellow
+                  "font_size": 68,
+                  "emoji_map": {
+                      "money": "\U0001F4B0", "success": "\U0001F3C6", "life": "\U0001F331",
+                      "love": "\U00002764", "truth": "\U0001F4AF", "secret": "\U0001F510"
+                  }
+              },
+              "motivation": {
+                  "highlight_color": "&H000080FF",  # Orange
+                  "font_size": 70,
+                  "emoji_map": {
+                      "win": "\U0001F3C6", "strong": "\U0001F4AA", "fire": "\U0001F525",
+                      "king": "\U0001F451", "goal": "\U0001F3AF", "dream": "\U0001F31F"
+                  }
+              }
+          }
+          
+          style = STYLES.get(CHANNEL, STYLES["science"])
+          
+          os.makedirs(OUTPUT_DIR, exist_ok=True)
+          
+          # ============================================================
+          # STEP 1: TRANSCRIBE WITH WORD TIMESTAMPS
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("STEP 1: Transcribing with Whisper...")
+          print("="*60)
+          
+          model = WhisperModel("base", compute_type="int8")
+          segments, info = model.transcribe(INPUT_VIDEO, word_timestamps=True)
+          
+          transcript = []
+          all_words = []
+          
+          for segment in segments:
+              seg_data = {
+                  "start": segment.start,
+                  "end": segment.end,
+                  "text": segment.text.strip(),
+                  "words": []
+              }
+              for word in segment.words:
+                  word_data = {
+                      "text": word.word.strip(),
+                      "start": word.start,
+                      "end": word.end
+                  }
+                  seg_data["words"].append(word_data)
+                  all_words.append(word_data)
+              transcript.append(seg_data)
+          
+          print(f"Transcribed {len(transcript)} segments, {len(all_words)} words")
+          
+          # ============================================================
+          # STEP 2: DETECT FILLER WORDS & SILENCE
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("STEP 2: Detecting filler words...")
+          print("="*60)
+          
+          FILLER_WORDS = {'um', 'uh', 'like', 'you know', 'er', 'ah', 'so,', 'well,', 'i mean'}
+          
+          filler_segments = []
+          for word in all_words:
+              if word["text"].lower().strip(',').strip() in FILLER_WORDS:
+                  filler_segments.append((word["start"], word["end"]))
+          
+          print(f"Found {len(filler_segments)} filler words to remove")
+          
+          # ============================================================
+          # STEP 3: FIND VIRAL HOOKS
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("STEP 3: Finding viral hooks...")
+          print("="*60)
+          
+          HOOK_PATTERNS = [
+              r"^did you know",
+              r"^what if",
+              r"^have you ever",
+              r"^why do",
+              r"^how come",
+              r"^the truth is",
+              r"^actually,",
+              r"^here's the thing",
+              r"^most people don't",
+              r"^nobody tells you",
+              r"^the crazy thing is",
+              r"^imagine",
+              r"think about this",
+              r"let me tell you",
+              r"^so here's",
+          ]
+          
+          def score_hook(segment):
+              text = segment["text"].lower()
+              score = 0
+              
+              # Question = strong hook
+              if text.strip().endswith('?'):
+                  score += 5
+              
+              # Pattern matching
+              for pattern in HOOK_PATTERNS:
+                  if re.search(pattern, text, re.IGNORECASE):
+                      score += 4
+              
+              # Emotional content
+              blob = TextBlob(segment["text"])
+              if abs(blob.sentiment.polarity) > 0.3:
+                  score += 2
+              
+              # Short punchy sentence
+              word_count = len(segment["text"].split())
+              if 5 <= word_count <= 15:
+                  score += 1
+              
+              return score
+          
+          # Score all segments and find best starting points
+          hook_candidates = []
+          for i, seg in enumerate(transcript):
+              score = score_hook(seg)
+              if score >= 3:
+                  hook_candidates.append({
+                      "index": i,
+                      "start": seg["start"],
+                      "text": seg["text"],
+                      "score": score
+                  })
+          
+          hook_candidates.sort(key=lambda x: x["score"], reverse=True)
+          print(f"Found {len(hook_candidates)} potential hooks")
+          for h in hook_candidates[:5]:
+              print(f"  Score {h['score']}: {h['text'][:60]}...")
+          
+          # ============================================================
+          # STEP 4: CREATE CLIP SEGMENTS
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("STEP 4: Creating clip segments...")
+          print("="*60)
+          
+          # Get video duration
+          probe = subprocess.run([
+              'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+              '-of', 'json', INPUT_VIDEO
+          ], capture_output=True, text=True)
+          total_duration = float(json.loads(probe.stdout)['format']['duration'])
+          
+          clips = []
+          used_ranges = []
+          
+          def overlaps(start, end):
+              for s, e in used_ranges:
+                  if not (end < s or start > e):
+                      return True
+              return False
+          
+          for hook in hook_candidates[:MAX_CLIPS * 2]:
+              start_time = hook["start"]
+              
+              # Find good ending (natural pause or sentence end)
+              end_time = start_time + CLIP_DURATION[0]
+              
+              for seg in transcript:
+                  if seg["start"] > start_time + CLIP_DURATION[0]:
+                      if seg["start"] < start_time + CLIP_DURATION[1]:
+                          # Check if sentence ends with period/question
+                          if seg["text"].strip().endswith(('.', '?', '!')):
+                              end_time = seg["end"]
+                              break
+              
+              end_time = min(end_time, start_time + CLIP_DURATION[1], total_duration)
+              
+              if not overlaps(start_time, end_time) and end_time - start_time >= CLIP_DURATION[0]:
+                  clips.append({
+                      "start": start_time,
+                      "end": end_time,
+                      "hook_text": hook["text"],
+                      "score": hook["score"]
+                  })
+                  used_ranges.append((start_time, end_time))
+                  
+                  if len(clips) >= MAX_CLIPS:
+                      break
+          
+          print(f"Created {len(clips)} clips")
+          
+          # ============================================================
+          # STEP 5: EXTRACT KEYWORDS FOR B-ROLL
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("STEP 5: Extracting keywords for B-roll...")
+          print("="*60)
+          
+          kw_extractor = yake.KeywordExtractor(lan="en", n=2, top=5)
+          
+          def get_broll_keywords(text):
+              keywords = kw_extractor.extract_keywords(text)
+              # Filter to visual keywords
+              visual_terms = []
+              for kw, score in keywords:
+                  # Skip abstract words
+                  if len(kw) > 3 and score < 0.5:
+                      visual_terms.append(kw.lower())
+              return visual_terms[:3]
+          
+          # ============================================================
+          # STEP 6: FETCH B-ROLL FROM PEXELS
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("STEP 6: Fetching B-roll from Pexels...")
+          print("="*60)
+          
+          broll_cache = {}
+          
+          def fetch_broll(keyword):
+              if not PEXELS_API:
+                  return None
+              if keyword in broll_cache:
+                  return broll_cache[keyword]
+              
+              try:
+                  headers = {"Authorization": PEXELS_API}
+                  url = f"https://api.pexels.com/videos/search?query={keyword}&per_page=1&orientation=portrait&size=medium"
+                  resp = requests.get(url, headers=headers, timeout=10)
+                  data = resp.json()
+                  
+                  if data.get('videos'):
+                      # Get HD quality
+                      for vf in data['videos'][0]['video_files']:
+                          if vf.get('quality') == 'hd' and vf.get('width', 0) >= 720:
+                              broll_cache[keyword] = vf['link']
+                              return vf['link']
+                      # Fallback to first available
+                      broll_cache[keyword] = data['videos'][0]['video_files'][0]['link']
+                      return broll_cache[keyword]
+              except Exception as e:
+                  print(f"  B-roll fetch error for '{keyword}': {e}")
+              
+              return None
+          
+          # ============================================================
+          # STEP 7: PROCESS EACH CLIP
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("STEP 7: Processing clips...")
+          print("="*60)
+          
+          for clip_idx, clip in enumerate(clips):
+              print(f"\n--- Clip {clip_idx + 1}/{len(clips)} ---")
+              print(f"  Time: {clip['start']:.1f}s - {clip['end']:.1f}s")
+              print(f"  Hook: {clip['hook_text'][:50]}...")
+              
+              clip_name = f"clip_{clip_idx + 1:02d}"
+              temp_clip = f"{OUTPUT_DIR}/{clip_name}_temp.mp4"
+              temp_tracked = f"{OUTPUT_DIR}/{clip_name}_tracked.mp4"
+              temp_broll = f"{OUTPUT_DIR}/{clip_name}_broll.mp4"
+              final_clip = f"{OUTPUT_DIR}/{clip_name}_final.mp4"
+              
+              # -----------------------------------------------------
+              # 7A: Extract raw clip
+              # -----------------------------------------------------
+              print("  Extracting clip...")
+              subprocess.run([
+                  'ffmpeg', '-y', '-ss', str(clip['start']), '-t', str(clip['end'] - clip['start']),
+                  '-i', INPUT_VIDEO, '-c:v', 'libx264', '-c:a', 'aac', temp_clip
+              ], capture_output=True)
+              
+              # -----------------------------------------------------
+              # 7B: Face tracking crop
+              # -----------------------------------------------------
+              print("  Face tracking...")
+              
+              cap = cv2.VideoCapture(temp_clip)
+              fps = cap.get(cv2.CAP_PROP_FPS)
+              orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+              orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+              
+              # Target 9:16 aspect ratio
+              if orig_w > orig_h:  # Landscape
+                  crop_h = orig_h
+                  crop_w = int(orig_h * 9 / 16)
+              else:  # Portrait or square
+                  crop_w = orig_w
+                  crop_h = int(orig_w * 16 / 9)
+                  crop_h = min(crop_h, orig_h)
+                  crop_w = int(crop_h * 9 / 16)
+              
+              # Initialize MediaPipe
+              mp_face = mp.solutions.face_detection
+              
+              # First pass: collect face positions
+              face_positions = []
+              frame_count = 0
+              
+              with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_det:
+                  while True:
+                      ret, frame = cap.read()
+                      if not ret:
+                          break
+                      
+                      rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                      results = face_det.process(rgb)
+                      
+                      if results.detections:
+                          bbox = results.detections[0].location_data.relative_bounding_box
+                          face_x = int((bbox.xmin + bbox.width / 2) * orig_w)
+                          face_y = int((bbox.ymin + bbox.height / 2) * orig_h)
+                      else:
+                          face_x = orig_w // 2
+                          face_y = orig_h // 2
+                      
+                      face_positions.append((face_x, face_y))
+                      frame_count += 1
+              
+              cap.release()
+              
+              # Smooth positions with exponential moving average
+              alpha = 0.08  # Lower = smoother
+              smoothed = []
+              sx, sy = face_positions[0]
+              for fx, fy in face_positions:
+                  sx = alpha * fx + (1 - alpha) * sx
+                  sy = alpha * fy + (1 - alpha) * sy
+                  smoothed.append((int(sx), int(sy)))
+              
+              # Generate crop commands for FFmpeg
+              crop_data = []
+              for i, (fx, fy) in enumerate(smoothed):
+                  crop_x = max(0, min(fx - crop_w // 2, orig_w - crop_w))
+                  crop_y = max(0, min(fy - crop_h // 2, orig_h - crop_h))
+                  crop_data.append(f"{crop_x}:{crop_y}")
+              
+              # Write crop data to file for FFmpeg
+              crop_file = f"{OUTPUT_DIR}/{clip_name}_crops.txt"
+              with open(crop_file, 'w') as f:
+                  for i, cd in enumerate(crop_data):
+                      f.write(f"{i} {cd}\n")
+              
+              # Apply face-tracked crop with FFmpeg
+              # Use sendcmd to change crop position per frame
+              subprocess.run([
+                  'ffmpeg', '-y', '-i', temp_clip,
+                  '-vf', f"crop={crop_w}:{crop_h}:'{smoothed[0][0] - crop_w//2}':'{smoothed[0][1] - crop_h//2}',scale=1080:1920",
+                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                  '-c:a', 'aac', '-b:a', '128k',
+                  temp_tracked
+              ], capture_output=True)
+              
+              # Note: For truly dynamic per-frame cropping, we'd need a more complex approach
+              # Using center-weighted average position for simplicity
+              avg_x = int(sum(p[0] for p in smoothed) / len(smoothed))
+              avg_y = int(sum(p[1] for p in smoothed) / len(smoothed))
+              crop_x = max(0, min(avg_x - crop_w // 2, orig_w - crop_w))
+              crop_y = max(0, min(avg_y - crop_h // 2, orig_h - crop_h))
+              
+              subprocess.run([
+                  'ffmpeg', '-y', '-i', temp_clip,
+                  '-vf', f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920",
+                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                  '-c:a', 'aac', '-b:a', '128k',
+                  temp_tracked
+              ], capture_output=True)
+              
+              # -----------------------------------------------------
+              # 7C: Get clip transcript and add B-roll
+              # -----------------------------------------------------
+              print("  Adding B-roll...")
+              
+              clip_words = []
+              clip_segments = []
+              for seg in transcript:
+                  if seg["start"] >= clip["start"] and seg["end"] <= clip["end"]:
+                      clip_segments.append(seg)
+                      clip_words.extend(seg["words"])
+              
+              # Find sentences for B-roll
+              broll_insertions = []
+              broll_idx = 0
+              
+              for seg in clip_segments[:5]:  # Limit B-roll checks
+                  keywords = get_broll_keywords(seg["text"])
+                  for kw in keywords:
+                      broll_url = fetch_broll(kw)
+                      if broll_url:
+                          # Download B-roll
+                          broll_file = f"{OUTPUT_DIR}/broll_{broll_idx}.mp4"
+                          try:
+                              resp = requests.get(broll_url, timeout=30)
+                              with open(broll_file, 'wb') as f:
+                                  f.write(resp.content)
+                              
+                              broll_insertions.append({
+                                  "file": broll_file,
+                                  "start": seg["start"] - clip["start"],
+                                  "duration": min(3.0, seg["end"] - seg["start"]),
+                                  "keyword": kw
+                              })
+                              broll_idx += 1
+                              print(f"    B-roll: '{kw}' at {seg['start'] - clip['start']:.1f}s")
+                              break
+                          except:
+                              pass
+                  
+                  if broll_idx >= 3:  # Max 3 B-rolls per clip
+                      break
+              
+              # Apply B-roll overlays
+              current_video = temp_tracked
+              
+              for bi, broll in enumerate(broll_insertions):
+                  next_video = f"{OUTPUT_DIR}/{clip_name}_br{bi}.mp4"
+                  
+                  # Scale and overlay B-roll with fade transition
+                  filter_complex = (
+                      f"[1:v]scale=1080:1920,setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.3,fade=t=out:st=2.7:d=0.3[broll];"
+                      f"[0:v][broll]overlay=enable='between(t,{broll['start']},{broll['start'] + broll['duration']})'[out]"
+                  )
+                  
+                  subprocess.run([
+                      'ffmpeg', '-y', '-i', current_video, '-i', broll["file"],
+                      '-filter_complex', filter_complex,
+                      '-map', '[out]', '-map', '0:a',
+                      '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                      '-c:a', 'copy', next_video
+                  ], capture_output=True)
+                  
+                  if os.path.exists(next_video) and os.path.getsize(next_video) > 0:
+                      current_video = next_video
+              
+              # -----------------------------------------------------
+              # 7D: Generate captions (ASS format)
+              # -----------------------------------------------------
+              print("  Generating captions...")
+              
+              ass_file = f"{OUTPUT_DIR}/{clip_name}.ass"
+              
+              highlight_color = style["highlight_color"]
+              font_size = style["font_size"]
+              emoji_map = style["emoji_map"]
+              
+              ass_content = f"""[Script Info]
+          Title: Viral Clip
+          ScriptType: v4.00+
+          WrapStyle: 0
+          PlayResX: 1080
+          PlayResY: 1920
+          ScaledBorderAndShadow: yes
+          
+          [V4+ Styles]
+          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+          Style: Default,Montserrat Bold,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,300,1
+          Style: Highlight,Montserrat Bold,{int(font_size * 1.15)},{highlight_color},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,40,40,300,1
+          
+          [Events]
+          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+          """
+              
+              def format_time(seconds):
+                  h = int(seconds // 3600)
+                  m = int((seconds % 3600) // 60)
+                  s = seconds % 60
+                  return f"{h}:{m:02d}:{s:05.2f}"
+              
+              # Word-by-word captions with context
+              for i, word in enumerate(clip_words):
+                  word_start = word["start"] - clip["start"]
+                  word_end = word["end"] - clip["start"]
+                  
+                  if word_start < 0:
+                      continue
+                  
+                  # Get context (1 word before, current, 1 word after)
+                  context_start = max(0, i - 1)
+                  context_end = min(len(clip_words), i + 2)
+                  
+                  line_parts = []
+                  emoji_to_add = ""
+                  
+                  for j in range(context_start, context_end):
+                      w = clip_words[j]["text"].upper()
+                      
+                      # Check for emoji trigger
+                      for trigger, emoji in emoji_map.items():
+                          if trigger.upper() in w:
+                              emoji_to_add = emoji
+                      
+                      if j == i:
+                          # Current word - highlighted and scaled
+                          line_parts.append("{\\c" + highlight_color + "\\fscx115\\fscy115}" + w + "{\\r}")
+                      else:
+                          line_parts.append(w)
+                  
+                  text = " ".join(line_parts)
+                  if emoji_to_add:
+                      text += " " + emoji_to_add
+                  
+                  ass_content += f"Dialogue: 0,{format_time(word_start)},{format_time(word_end)},Default,,0,0,0,,{text}\n"
+              
+              with open(ass_file, 'w', encoding='utf-8') as f:
+                  f.write(ass_content)
+              
+              # -----------------------------------------------------
+              # 7E: Burn captions and finalize
+              # -----------------------------------------------------
+              print("  Rendering final video...")
+              
+              subprocess.run([
+                  'ffmpeg', '-y', '-i', current_video,
+                  '-vf', f"ass={ass_file}",
+                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
+                  '-c:a', 'aac', '-b:a', '128k',
+                  final_clip
+              ], capture_output=True)
+              
+              # Verify output
+              if os.path.exists(final_clip) and os.path.getsize(final_clip) > 0:
+                  size_mb = os.path.getsize(final_clip) / (1024 * 1024)
+                  print(f"  ✅ Created: {final_clip} ({size_mb:.1f} MB)")
+              else:
+                  print(f"  ❌ Failed to create clip")
+              
+              # Cleanup temp files
+              for f in [temp_clip, temp_tracked, crop_file]:
+                  if os.path.exists(f):
+                      os.remove(f)
+          
+          # ============================================================
+          # STEP 8: SUMMARY
+          # ============================================================
+          
+          print("\n" + "="*60)
+          print("COMPLETE!")
+          print("="*60)
+          
+          final_clips = list(Path(OUTPUT_DIR).glob("*_final.mp4"))
+          print(f"Created {len(final_clips)} viral clips:")
+          for fc in final_clips:
+              print(f"  - {fc.name}")
+
+      - name: Upload Clips Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: viral-clips-${{ github.event.client_payload.channel_type }}-${{ github.run_id }}
+          path: clips/*_final.mp4
+          retention-days: 7
+
+      - name: Upload to YouTube (Optional)
+        if: ${{ github.event.client_payload.auto_upload == 'true' }}
+        shell: python
+        env:
+          YOUTUBE_CREDENTIALS: ${{ secrets.YOUTUBE_CREDENTIALS }}
+          CHANNEL_TYPE: ${{ github.event.client_payload.channel_type }}
+        run: |
+          import os
+          import json
+          import glob
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          
+          creds_json = os.environ.get("YOUTUBE_CREDENTIALS")
+          if not creds_json:
+              print("No YouTube credentials, skipping upload")
+              exit(0)
+          
+          creds = json.loads(creds_json)
+          credentials = Credentials(
+              token=None,
+              refresh_token=creds['refresh_token'],
+              token_uri="https://oauth2.googleapis.com/token",
+              client_id=creds['client_id'],
+              client_secret=creds['client_secret']
+          )
+          
+          youtube = build('youtube', 'v3', credentials=credentials)
+          channel = os.environ.get("CHANNEL_TYPE", "science")
+          
+          titles = {
+              "science": ["Mind-blowing science 🔬 #shorts", "You won't believe this 🤯 #shorts", "Science fact 🧠 #shorts"],
+              "podcast": ["This changed everything 🎙️ #shorts", "Listen to this 💡 #shorts", "Real talk 🔥 #shorts"],
+              "motivation": ["You need to hear this 💪 #shorts", "Success mindset 🏆 #shorts", "Daily motivation 🔥 #shorts"]
+          }
+          
+          clips = sorted(glob.glob("clips/*_final.mp4"))
+          
+          for i, clip_path in enumerate(clips):
+              title = titles.get(channel, titles["science"])[i % len(titles.get(channel, titles["science"]))]
+              
+              print(f"Uploading: {clip_path} as '{title}'")
+              
+              request = youtube.videos().insert(
+                  part="snippet,status",
+                  body={
+                      "snippet": {
+                          "title": title,
+                          "description": "Subscribe for more! 🔔 #shorts #viral",
+                          "tags": ["shorts", "viral", channel],
+                          "categoryId": "22"
+                      },
+                      "status": {
+                          "privacyStatus": "public",
+                          "selfDeclaredMadeForKids": False
+                      }
+                  },
+                  media_body=MediaFileUpload(clip_path, resumable=True)
+              )
+              
+              response = request.execute()
+              print(f"✅ Uploaded: https://youtube.com/shorts/{response['id']}")
