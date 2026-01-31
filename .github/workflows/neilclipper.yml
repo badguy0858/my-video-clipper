@@ -12,7 +12,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10' 
 
       - name: Setup FFmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
@@ -22,6 +22,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl1 libglib2.0-0 fonts-liberation
           pip install --upgrade pip
+          # CRITICAL FIX: Pin protobuf to 3.20.3 to make MediaPipe Face Tracking work
+          pip install "protobuf==3.20.3"
           pip install gdown faster-whisper mediapipe opencv-python-headless \
             yake requests numpy textblob google-auth google-auth-oauthlib \
             google-api-python-client
@@ -35,9 +37,11 @@ jobs:
         run: |
           FILE_ID="${{ github.event.client_payload.file_id }}"
           echo "Downloading: $FILE_ID"
-          gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}/view" -O raw_input.mp4 \
-            || gdown "$FILE_ID" -O raw_input.mp4
+          # Try normal download, failover to fuzzy
+          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O raw_input.mp4 || \
+          gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}/view" -O raw_input.mp4
           
+          # Clean audio to prevent errors
           ffmpeg -y -i raw_input.mp4 -c:v copy -c:a aac -b:a 128k -ar 44100 input.mp4 \
             2>/dev/null || cp raw_input.mp4 input.mp4
           
@@ -76,8 +80,8 @@ jobs:
           
           STYLES = {
               "science": {
-                  "highlight_color": "&H00FFFF00",
-                  "font_size": 72,
+                  "highlight_color": "&H00FFFF00", # Yellow
+                  "font_size": 80,
                   "emoji_map": {
                       "universe": "\U0001F30C", "space": "\U0001F680", "star": "\U00002B50",
                       "sun": "\U00002600", "moon": "\U0001F319", "earth": "\U0001F30D",
@@ -86,16 +90,16 @@ jobs:
                   }
               },
               "podcast": {
-                  "highlight_color": "&H0000FFFF",
-                  "font_size": 68,
+                  "highlight_color": "&H0000FFFF", # Yellow/Gold
+                  "font_size": 75,
                   "emoji_map": {
                       "money": "\U0001F4B0", "success": "\U0001F3C6", "life": "\U0001F331",
                       "love": "\U00002764", "truth": "\U0001F4AF", "secret": "\U0001F510"
                   }
               },
               "motivation": {
-                  "highlight_color": "&H000080FF",
-                  "font_size": 70,
+                  "highlight_color": "&H000080FF", # Orange
+                  "font_size": 78,
                   "emoji_map": {
                       "win": "\U0001F3C6", "strong": "\U0001F4AA", "fire": "\U0001F525",
                       "king": "\U0001F451", "goal": "\U0001F3AF", "dream": "\U0001F31F"
@@ -104,436 +108,211 @@ jobs:
           }
           
           style = STYLES.get(CHANNEL, STYLES["science"])
-          
           os.makedirs(OUTPUT_DIR, exist_ok=True)
           
           # ============================================================
           # STEP 1: TRANSCRIBE
           # ============================================================
-          
-          print("\n" + "="*60)
-          print("STEP 1: Transcribing with Whisper...")
-          print("="*60)
-          
-          model = WhisperModel("base", compute_type="int8")
+          print("STEP 1: Transcribing...")
+          model = WhisperModel("medium", compute_type="int8") # Switched to Medium for better accuracy
           segments, info = model.transcribe(INPUT_VIDEO, word_timestamps=True)
           
           transcript = []
-          all_words = []
-          
           for segment in segments:
-              seg_data = {
-                  "start": segment.start,
-                  "end": segment.end,
-                  "text": segment.text.strip(),
-                  "words": []
-              }
               for word in segment.words:
-                  word_data = {
+                  transcript.append({
                       "text": word.word.strip(),
                       "start": word.start,
                       "end": word.end
-                  }
-                  seg_data["words"].append(word_data)
-                  all_words.append(word_data)
-              transcript.append(seg_data)
+                  })
           
-          print(f"Transcribed {len(transcript)} segments, {len(all_words)} words")
+          print(f"Transcribed {len(transcript)} words")
           
           # ============================================================
-          # STEP 2: DETECT FILLER WORDS
+          # STEP 2: FIND HOOKS
           # ============================================================
-          
-          print("\n" + "="*60)
-          print("STEP 2: Detecting filler words...")
-          print("="*60)
-          
-          FILLER_WORDS = {'um', 'uh', 'like', 'you know', 'er', 'ah', 'so,', 'well,', 'i mean'}
-          
-          filler_segments = []
-          for word in all_words:
-              if word["text"].lower().strip(',').strip() in FILLER_WORDS:
-                  filler_segments.append((word["start"], word["end"]))
-          
-          print(f"Found {len(filler_segments)} filler words")
-          
-          # ============================================================
-          # STEP 3: FIND VIRAL HOOKS
-          # ============================================================
-          
-          print("\n" + "="*60)
-          print("STEP 3: Finding viral hooks...")
-          print("="*60)
-          
+          print("STEP 2: Finding Hooks...")
           HOOK_PATTERNS = [
-              r"^did you know", r"^what if", r"^have you ever", r"^why do",
-              r"^how come", r"^the truth is", r"^actually,", r"^here's the thing",
-              r"^most people don't", r"^nobody tells you", r"^the crazy thing is",
-              r"^imagine", r"think about this", r"let me tell you", r"^so here's",
+              r"did you know", r"what if", r"have you ever", r"why do",
+              r"the truth is", r"actually", r"here's the thing",
+              r"most people don't", r"nobody tells you", r"imagine",
+              r"think about this", r"let me tell you"
           ]
           
-          def score_hook(segment):
-              text = segment["text"].lower()
+          full_text = " ".join([w["text"] for w in transcript])
+          sentences = re.split(r'(?<=[.!?]) +', full_text)
+          
+          potential_starts = []
+          current_time = 0
+          
+          # Map sentences back to timestamps roughly
+          word_idx = 0
+          for sentence in sentences:
+              if word_idx >= len(transcript): break
+              start_t = transcript[word_idx]["start"]
+              
               score = 0
-              if text.strip().endswith('?'):
-                  score += 5
+              if sentence.strip().endswith('?'): score += 3
               for pattern in HOOK_PATTERNS:
-                  if re.search(pattern, text, re.IGNORECASE):
-                      score += 4
-              blob = TextBlob(segment["text"])
-              if abs(blob.sentiment.polarity) > 0.3:
-                  score += 2
-              word_count = len(segment["text"].split())
-              if 5 <= word_count <= 15:
-                  score += 1
-              return score
+                  if re.search(pattern, sentence, re.IGNORECASE):
+                      score += 5
+              
+              if score > 0:
+                  potential_starts.append({"start": start_t, "score": score, "text": sentence})
+              
+              word_idx += len(sentence.split())
           
-          hook_candidates = []
-          for i, seg in enumerate(transcript):
-              score = score_hook(seg)
-              if score >= 3:
-                  hook_candidates.append({
-                      "index": i, "start": seg["start"],
-                      "text": seg["text"], "score": score
-                  })
-          
-          hook_candidates.sort(key=lambda x: x["score"], reverse=True)
-          print(f"Found {len(hook_candidates)} potential hooks")
-          
-          # If no hooks found, use segments with questions or first segments
-          if len(hook_candidates) == 0:
-              print("No strong hooks found, using fallback...")
-              for i, seg in enumerate(transcript[:20]):
-                  if seg["text"].strip().endswith('?') or i % 5 == 0:
-                      hook_candidates.append({
-                          "index": i, "start": seg["start"],
-                          "text": seg["text"], "score": 1
-                      })
-          
+          potential_starts.sort(key=lambda x: x["score"], reverse=True)
+          if not potential_starts:
+              potential_starts.append({"start": 0, "score": 1, "text": "Start"})
+              
           # ============================================================
-          # STEP 4: CREATE CLIP SEGMENTS
+          # STEP 3: CREATE CLIPS
           # ============================================================
-          
-          print("\n" + "="*60)
-          print("STEP 4: Creating clip segments...")
-          print("="*60)
-          
-          probe = subprocess.run([
-              'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-              '-of', 'json', INPUT_VIDEO
-          ], capture_output=True, text=True)
-          total_duration = float(json.loads(probe.stdout)['format']['duration'])
-          
+          print("STEP 3: Creating Clips...")
           clips = []
-          used_ranges = []
+          used_times = []
           
-          def overlaps(start, end):
-              for s, e in used_ranges:
-                  if not (end < s or start > e):
-                      return True
-              return False
+          probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', INPUT_VIDEO], capture_output=True, text=True)
+          duration = float(json.loads(probe.stdout)['format']['duration'])
           
-          for hook in hook_candidates[:MAX_CLIPS * 2]:
-              start_time = hook["start"]
-              end_time = start_time + CLIP_DURATION[0]
+          for hook in potential_starts:
+              start = hook["start"]
+              end = min(start + 59, duration) # 59 seconds max for Shorts
               
-              for seg in transcript:
-                  if seg["start"] > start_time + CLIP_DURATION[0]:
-                      if seg["start"] < start_time + CLIP_DURATION[1]:
-                          if seg["text"].strip().endswith(('.', '?', '!')):
-                              end_time = seg["end"]
-                              break
-              
-              end_time = min(end_time, start_time + CLIP_DURATION[1], total_duration)
-              
-              if not overlaps(start_time, end_time) and end_time - start_time >= CLIP_DURATION[0]:
-                  clips.append({
-                      "start": start_time, "end": end_time,
-                      "hook_text": hook["text"], "score": hook["score"]
-                  })
-                  used_ranges.append((start_time, end_time))
-                  if len(clips) >= MAX_CLIPS:
+              # Check overlap
+              is_overlap = False
+              for u_s, u_e in used_times:
+                  if not (end < u_s or start > u_e):
+                      is_overlap = True
                       break
-          
-          # Fallback: if no clips, create one from beginning
-          if len(clips) == 0:
-              print("No clips matched criteria, creating from start...")
-              clips.append({
-                  "start": 0,
-                  "end": min(55, total_duration),
-                  "hook_text": transcript[0]["text"] if transcript else "Clip",
-                  "score": 0
-              })
-          
-          print(f"Created {len(clips)} clips")
-          
-          # ============================================================
-          # STEP 5: EXTRACT KEYWORDS FOR B-ROLL
-          # ============================================================
-          
-          print("\n" + "="*60)
-          print("STEP 5: Extracting keywords for B-roll...")
-          print("="*60)
-          
-          kw_extractor = yake.KeywordExtractor(lan="en", n=2, top=5)
-          
-          def get_broll_keywords(text):
-              keywords = kw_extractor.extract_keywords(text)
-              visual_terms = []
-              for kw, score in keywords:
-                  if len(kw) > 3 and score < 0.5:
-                      visual_terms.append(kw.lower())
-              return visual_terms[:3]
-          
-          # ============================================================
-          # STEP 6: FETCH B-ROLL FROM PEXELS
-          # ============================================================
-          
-          print("\n" + "="*60)
-          print("STEP 6: Fetching B-roll from Pexels...")
-          print("="*60)
-          
-          broll_cache = {}
-          
-          def fetch_broll(keyword):
-              if not PEXELS_API:
-                  print("  No Pexels API key, skipping B-roll")
-                  return None
-              if keyword in broll_cache:
-                  return broll_cache[keyword]
               
-              try:
-                  headers = {"Authorization": PEXELS_API}
-                  url = f"https://api.pexels.com/videos/search?query={keyword}&per_page=1&orientation=portrait&size=medium"
-                  resp = requests.get(url, headers=headers, timeout=10)
-                  data = resp.json()
+              if not is_overlap and (end - start > 15):
+                  clips.append({"start": start, "end": end, "text": hook["text"]})
+                  used_times.append((start, end))
+                  if len(clips) >= MAX_CLIPS: break
                   
-                  if data.get('videos'):
-                      for vf in data['videos'][0]['video_files']:
-                          if vf.get('quality') == 'hd' and vf.get('width', 0) >= 720:
-                              broll_cache[keyword] = vf['link']
-                              return vf['link']
-                      broll_cache[keyword] = data['videos'][0]['video_files'][0]['link']
-                      return broll_cache[keyword]
-              except Exception as e:
-                  print(f"  B-roll fetch error: {e}")
-              return None
-          
+          if not clips:
+              clips.append({"start": 0, "end": min(59, duration), "text": "Full"})
+
           # ============================================================
-          # STEP 7: PROCESS EACH CLIP
+          # STEP 4: PROCESS & FACE TRACK
           # ============================================================
+          print("STEP 4: Processing...")
           
-          print("\n" + "="*60)
-          print("STEP 7: Processing clips...")
-          print("="*60)
-          
-          for clip_idx, clip in enumerate(clips):
-              print(f"\n--- Clip {clip_idx + 1}/{len(clips)} ---")
-              print(f"  Time: {clip['start']:.1f}s - {clip['end']:.1f}s")
+          for idx, clip in enumerate(clips):
+              print(f"Processing Clip {idx+1}...")
+              clip_name = f"clip_{idx+1}"
+              temp_file = f"{OUTPUT_DIR}/{clip_name}_temp.mp4"
+              final_file = f"{OUTPUT_DIR}/{clip_name}_final.mp4"
               
-              clip_name = f"clip_{clip_idx + 1:02d}"
-              temp_clip = f"{OUTPUT_DIR}/{clip_name}_temp.mp4"
-              temp_tracked = f"{OUTPUT_DIR}/{clip_name}_tracked.mp4"
-              final_clip = f"{OUTPUT_DIR}/{clip_name}_final.mp4"
-              
-              # 7A: Extract raw clip
-              print("  Extracting clip...")
+              # Extract
               subprocess.run([
                   'ffmpeg', '-y', '-ss', str(clip['start']), '-t', str(clip['end'] - clip['start']),
-                  '-i', INPUT_VIDEO, '-c:v', 'libx264', '-c:a', 'aac', temp_clip
-              ], capture_output=True)
+                  '-i', INPUT_VIDEO, '-c:v', 'libx264', '-c:a', 'aac', temp_file
+              ], check=True)
               
-              # 7B: Face tracking
-              print("  Face tracking...")
-              
+              # Face Tracking
               try:
-                  cap = cv2.VideoCapture(temp_clip)
-                  fps = cap.get(cv2.CAP_PROP_FPS) or 30
-                  orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                  orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                  cap = cv2.VideoCapture(temp_file)
+                  width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                  height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                   
-                  print(f"    Video: {orig_w}x{orig_h} @ {fps}fps")
-                  
-                  if orig_w == 0 or orig_h == 0:
-                      raise ValueError("Could not read video dimensions")
-                  
-                  if orig_w > orig_h:
-                      crop_h = orig_h
-                      crop_w = int(orig_h * 9 / 16)
-                  else:
-                      crop_w = orig_w
-                      crop_h = int(orig_w * 16 / 9)
-                      crop_h = min(crop_h, orig_h)
-                      crop_w = int(crop_h * 9 / 16)
-                  
-                  crop_w = max(crop_w, 1)
-                  crop_h = max(crop_h, 1)
+                  # Target 9:16
+                  target_w = int(height * 9 / 16)
+                  if target_w > width: target_w = width
                   
                   mp_face = mp.solutions.face_detection
-                  face_positions = []
-                  frame_count = 0
+                  face_detection = mp_face.FaceDetection(min_detection_confidence=0.5)
                   
-                  with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_det:
-                      while frame_count < 5000:  # Limit frames
-                          ret, frame = cap.read()
-                          if not ret:
-                              break
-                          frame_count += 1
-                          if frame_count % 3 != 0:  # Sample every 3rd frame
-                              continue
-                          try:
-                              rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                              results = face_det.process(rgb)
-                              if results.detections:
-                                  bbox = results.detections[0].location_data.relative_bounding_box
-                                  face_x = int((bbox.xmin + bbox.width / 2) * orig_w)
-                              else:
-                                  face_x = orig_w // 2
-                              face_positions.append(face_x)
-                          except:
-                              face_positions.append(orig_w // 2)
+                  x_centers = []
+                  while True:
+                      ret, frame = cap.read()
+                      if not ret: break
+                      
+                      # Only process every 5th frame for speed
+                      if int(cap.get(cv2.CAP_PROP_POS_FRAMES)) % 5 != 0: continue
+                      
+                      rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                      results = face_detection.process(rgb)
+                      
+                      if results.detections:
+                          for detection in results.detections:
+                              bbox = detection.location_data.relative_bounding_box
+                              x_center = bbox.xmin + (bbox.width / 2)
+                              x_centers.append(x_center * width)
+                              break # Only track first face
+                      else:
+                          x_centers.append(width / 2) # Default center
+                          
                   cap.release()
                   
-                  print(f"    Tracked {len(face_positions)} positions")
-                  
-                  # Smooth positions
-                  if face_positions:
-                      alpha = 0.08
-                      smoothed = []
-                      sx = face_positions[0]
-                      for fx in face_positions:
-                          sx = alpha * fx + (1 - alpha) * sx
-                          smoothed.append(int(sx))
-                      avg_x = int(sum(smoothed) / len(smoothed))
+                  # Smooth camera movement
+                  if x_centers:
+                      avg_x = int(sum(x_centers) / len(x_centers))
                   else:
-                      avg_x = orig_w // 2
-                  
-                  crop_x = max(0, min(avg_x - crop_w // 2, orig_w - crop_w))
+                      avg_x = width // 2
+                      
+                  # Calculate crop x
+                  crop_x = max(0, min(width - target_w, avg_x - (target_w // 2)))
+                  crop_filter = f"crop={target_w}:{height}:{crop_x}:0,scale=1080:1920"
                   
               except Exception as e:
-                  print(f"    Face tracking error: {e}, using center crop")
-                  # Fallback: get dimensions and center crop
-                  probe = subprocess.run([
-                      'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                      '-show_entries', 'stream=width,height', '-of', 'json', temp_clip
-                  ], capture_output=True, text=True)
-                  vinfo = json.loads(probe.stdout)['streams'][0]
-                  orig_w = int(vinfo['width'])
-                  orig_h = int(vinfo['height'])
-                  if orig_w > orig_h:
-                      crop_h = orig_h
-                      crop_w = int(orig_h * 9 / 16)
-                  else:
-                      crop_w = orig_w
-                      crop_h = min(int(orig_w * 16 / 9), orig_h)
-                      crop_w = int(crop_h * 9 / 16)
-                  crop_x = (orig_w - crop_w) // 2
-              
-              subprocess.run([
-                  'ffmpeg', '-y', '-i', temp_clip,
-                  '-vf', f"crop={crop_w}:{crop_h}:{crop_x}:0,scale=1080:1920",
-                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                  '-c:a', 'aac', '-b:a', '128k', temp_tracked
-              ], capture_output=True)
-              
-              # 7C: Get clip words for captions
-              clip_words = []
-              for seg in transcript:
-                  if seg["start"] >= clip["start"] and seg["end"] <= clip["end"]:
-                      for w in seg.get("words", []):
-                          clip_words.append(w)
-              
-              # 7D: Generate captions
-              print("  Generating captions...")
-              
-              ass_file = f"{OUTPUT_DIR}/{clip_name}.ass"
-              highlight_color = style["highlight_color"]
-              font_size = style["font_size"]
-              emoji_map = style["emoji_map"]
-              
+                  print(f"Face tracking failed: {e}, using center crop")
+                  crop_filter = "crop=ih*(9/16):ih,scale=1080:1920"
+
+              # Generate ASS Subtitles
+              ass_path = f"{OUTPUT_DIR}/{clip_name}.ass"
               ass_content = f"""[Script Info]
-          Title: Viral Clip
-          ScriptType: v4.00+
-          PlayResX: 1080
-          PlayResY: 1920
-          ScaledBorderAndShadow: yes
-          
-          [V4+ Styles]
-          Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-          Style: Default,Arial Bold,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,300,1
-          
-          [Events]
-          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-          """
+              ScriptType: v4.00+
+              PlayResX: 1080
+              PlayResY: 1920
               
-              def format_time(seconds):
-                  h = int(seconds // 3600)
-                  m = int((seconds % 3600) // 60)
-                  s = seconds % 60
-                  return f"{h}:{m:02d}:{s:05.2f}"
+              [V4+ Styles]
+              Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, BorderStyle, Outline, Shadow, Alignment, MarginV
+              Style: Default,Montserrat Bold,{style['font_size']},{style['highlight_color'].replace('&H', '&H00')},&H00000000,&H80000000,-1,1,3,0,2,350
               
-              for i, word in enumerate(clip_words):
-                  word_start = word["start"] - clip["start"]
-                  word_end = word["end"] - clip["start"]
-                  if word_start < 0:
-                      continue
-                  
-                  context_start = max(0, i - 1)
-                  context_end = min(len(clip_words), i + 2)
-                  
-                  line_parts = []
-                  emoji_to_add = ""
-                  
-                  for j in range(context_start, context_end):
-                      w = clip_words[j]["text"].upper()
-                      for trigger, emoji in emoji_map.items():
-                          if trigger.upper() in w:
-                              emoji_to_add = emoji
-                      if j == i:
-                          line_parts.append("{\\c" + highlight_color + "\\fscx115\\fscy115}" + w + "{\\r}")
-                      else:
-                          line_parts.append(w)
-                  
-                  text = " ".join(line_parts)
-                  if emoji_to_add:
-                      text += " " + emoji_to_add
-                  
-                  ass_content += f"Dialogue: 0,{format_time(word_start)},{format_time(word_end)},Default,,0,0,0,,{text}\n"
+              [Events]
+              Format: Layer, Start, End, Style, Text
+              """
               
-              with open(ass_file, 'w', encoding='utf-8') as f:
+              def fmt_time(s):
+                  h, r = divmod(s, 3600); m, sec = divmod(r, 60)
+                  return f"{int(h)}:{int(m):02}:{sec:05.2f}"
+
+              for w in transcript:
+                  if w['start'] >= clip['start'] and w['end'] <= clip['end']:
+                      # Relative time
+                      s_rel = w['start'] - clip['start']
+                      e_rel = w['end'] - clip['start']
+                      if s_rel < 0: continue
+                      
+                      clean_word = w['text'].upper()
+                      
+                      # Emoji Logic
+                      emoji = ""
+                      for key, val in style['emoji_map'].items():
+                          if key.upper() in clean_word:
+                              emoji = f" {val}"
+                              
+                      # Highlighting Logic: Active word is Yellow/Color, others White
+                      # We actually perform word-level highlighting by "Karaoke" style or single word display
+                      # For "Alex Hormozi" style, we usually show 2-3 words, but let's do simple word-by-word pop
+                      
+                      line = f"Dialogue: 0,{fmt_time(s_rel)},{fmt_time(e_rel)},Default,{{\\c{style['highlight_color']}}}{clean_word}{emoji}"
+                      ass_content += line + "\n"
+
+              with open(ass_path, "w") as f:
                   f.write(ass_content)
-              
-              # 7E: Burn captions
-              print("  Rendering final video...")
-              
+
+              # Render Final
+              print("Rendering...")
               subprocess.run([
-                  'ffmpeg', '-y', '-i', temp_tracked,
-                  '-vf', f"ass={ass_file}",
-                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
-                  '-c:a', 'aac', '-b:a', '128k', final_clip
-              ], capture_output=True)
+                  'ffmpeg', '-y', '-i', temp_file, '-vf', f"{crop_filter},subtitles={ass_path}",
+                  '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', final_file
+              ], check=True)
               
-              if os.path.exists(final_clip) and os.path.getsize(final_clip) > 0:
-                  size_mb = os.path.getsize(final_clip) / (1024 * 1024)
-                  print(f"  ✅ Created: {final_clip} ({size_mb:.1f} MB)")
-              else:
-                  print(f"  ❌ Failed to create clip")
-              
-              # Cleanup
-              for f in [temp_clip, temp_tracked]:
-                  if os.path.exists(f):
-                      os.remove(f)
-          
-          # ============================================================
-          # DONE
-          # ============================================================
-          
-          print("\n" + "="*60)
-          print("COMPLETE!")
-          print("="*60)
-          
-          final_clips = list(Path(OUTPUT_DIR).glob("*_final.mp4"))
-          print(f"Created {len(final_clips)} clips")
+              print(f"Done: {final_file}")
 
       - name: Upload Clips Artifact
         uses: actions/upload-artifact@v4
@@ -541,7 +320,6 @@ jobs:
           name: viral-clips-${{ github.run_id }}
           path: clips/*_final.mp4
           retention-days: 7
-          if-no-files-found: warn
 
       - name: Upload to YouTube
         if: ${{ github.event.client_payload.auto_upload == 'true' }}
@@ -559,9 +337,7 @@ jobs:
           from googleapiclient.http import MediaFileUpload
           
           creds_json = os.environ.get("YOUTUBE_CREDENTIALS")
-          if not creds_json:
-              print("No YouTube credentials, skipping upload")
-              exit(0)
+          if not creds_json: exit(0)
           
           creds = json.loads(creds_json)
           credentials = Credentials(
@@ -573,38 +349,20 @@ jobs:
           )
           
           youtube = build('youtube', 'v3', credentials=credentials)
-          channel = os.environ.get("CHANNEL_TYPE", "science")
-          
-          titles = {
-              "science": ["Mind-blowing 🔬 #shorts", "You won't believe this 🤯 #shorts"],
-              "podcast": ["This changed everything 🎙️ #shorts", "Listen to this 💡 #shorts"],
-              "motivation": ["You need to hear this 💪 #shorts", "Success mindset 🏆 #shorts"]
-          }
-          
           clips = sorted(glob.glob("clips/*_final.mp4"))
           
-          for i, clip_path in enumerate(clips):
-              title = titles.get(channel, titles["science"])[i % 2]
-              print(f"Uploading: {clip_path}")
-              
-              try:
-                  request = youtube.videos().insert(
-                      part="snippet,status",
-                      body={
-                          "snippet": {
-                              "title": title,
-                              "description": "Subscribe! 🔔 #shorts",
-                              "tags": ["shorts", "viral"],
-                              "categoryId": "22"
-                          },
-                          "status": {
-                              "privacyStatus": "public",
-                              "selfDeclaredMadeForKids": False
-                          }
-                      },
-                      media_body=MediaFileUpload(clip_path, resumable=True)
-                  )
-                  response = request.execute()
-                  print(f"✅ https://youtube.com/shorts/{response['id']}")
-              except Exception as e:
-                  print(f"❌ Upload failed: {e}")
+          for clip in clips:
+              print(f"Uploading {clip}...")
+              body = {
+                  "snippet": {
+                      "title": "Amazing Fact! 🤯 #shorts",
+                      "description": "Subscribe for more science! #shorts #viral",
+                      "categoryId": "22"
+                  },
+                  "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
+              }
+              youtube.videos().insert(
+                  part="snippet,status",
+                  body=body,
+                  media_body=MediaFileUpload(clip, resumable=True)
+              ).execute()
