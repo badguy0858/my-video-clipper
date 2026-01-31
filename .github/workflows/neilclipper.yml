@@ -346,51 +346,88 @@ jobs:
               # 7B: Face tracking
               print("  Face tracking...")
               
-              cap = cv2.VideoCapture(temp_clip)
-              fps = cap.get(cv2.CAP_PROP_FPS) or 30
-              orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-              orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-              
-              if orig_w > orig_h:
-                  crop_h = orig_h
-                  crop_w = int(orig_h * 9 / 16)
-              else:
-                  crop_w = orig_w
-                  crop_h = int(orig_w * 16 / 9)
-                  crop_h = min(crop_h, orig_h)
-                  crop_w = int(crop_h * 9 / 16)
-              
-              mp_face = mp.solutions.face_detection
-              face_positions = []
-              
-              with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_det:
-                  while True:
-                      ret, frame = cap.read()
-                      if not ret:
-                          break
-                      rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                      results = face_det.process(rgb)
-                      if results.detections:
-                          bbox = results.detections[0].location_data.relative_bounding_box
-                          face_x = int((bbox.xmin + bbox.width / 2) * orig_w)
-                      else:
-                          face_x = orig_w // 2
-                      face_positions.append(face_x)
-              cap.release()
-              
-              # Smooth positions
-              if face_positions:
-                  alpha = 0.08
-                  smoothed = []
-                  sx = face_positions[0]
-                  for fx in face_positions:
-                      sx = alpha * fx + (1 - alpha) * sx
-                      smoothed.append(int(sx))
-                  avg_x = int(sum(smoothed) / len(smoothed))
-              else:
-                  avg_x = orig_w // 2
-              
-              crop_x = max(0, min(avg_x - crop_w // 2, orig_w - crop_w))
+              try:
+                  cap = cv2.VideoCapture(temp_clip)
+                  fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                  orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                  orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                  
+                  print(f"    Video: {orig_w}x{orig_h} @ {fps}fps")
+                  
+                  if orig_w == 0 or orig_h == 0:
+                      raise ValueError("Could not read video dimensions")
+                  
+                  if orig_w > orig_h:
+                      crop_h = orig_h
+                      crop_w = int(orig_h * 9 / 16)
+                  else:
+                      crop_w = orig_w
+                      crop_h = int(orig_w * 16 / 9)
+                      crop_h = min(crop_h, orig_h)
+                      crop_w = int(crop_h * 9 / 16)
+                  
+                  crop_w = max(crop_w, 1)
+                  crop_h = max(crop_h, 1)
+                  
+                  mp_face = mp.solutions.face_detection
+                  face_positions = []
+                  frame_count = 0
+                  
+                  with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_det:
+                      while frame_count < 5000:  # Limit frames
+                          ret, frame = cap.read()
+                          if not ret:
+                              break
+                          frame_count += 1
+                          if frame_count % 3 != 0:  # Sample every 3rd frame
+                              continue
+                          try:
+                              rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                              results = face_det.process(rgb)
+                              if results.detections:
+                                  bbox = results.detections[0].location_data.relative_bounding_box
+                                  face_x = int((bbox.xmin + bbox.width / 2) * orig_w)
+                              else:
+                                  face_x = orig_w // 2
+                              face_positions.append(face_x)
+                          except:
+                              face_positions.append(orig_w // 2)
+                  cap.release()
+                  
+                  print(f"    Tracked {len(face_positions)} positions")
+                  
+                  # Smooth positions
+                  if face_positions:
+                      alpha = 0.08
+                      smoothed = []
+                      sx = face_positions[0]
+                      for fx in face_positions:
+                          sx = alpha * fx + (1 - alpha) * sx
+                          smoothed.append(int(sx))
+                      avg_x = int(sum(smoothed) / len(smoothed))
+                  else:
+                      avg_x = orig_w // 2
+                  
+                  crop_x = max(0, min(avg_x - crop_w // 2, orig_w - crop_w))
+                  
+              except Exception as e:
+                  print(f"    Face tracking error: {e}, using center crop")
+                  # Fallback: get dimensions and center crop
+                  probe = subprocess.run([
+                      'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                      '-show_entries', 'stream=width,height', '-of', 'json', temp_clip
+                  ], capture_output=True, text=True)
+                  vinfo = json.loads(probe.stdout)['streams'][0]
+                  orig_w = int(vinfo['width'])
+                  orig_h = int(vinfo['height'])
+                  if orig_w > orig_h:
+                      crop_h = orig_h
+                      crop_w = int(orig_h * 9 / 16)
+                  else:
+                      crop_w = orig_w
+                      crop_h = min(int(orig_w * 16 / 9), orig_h)
+                      crop_w = int(crop_h * 9 / 16)
+                  crop_x = (orig_w - crop_w) // 2
               
               subprocess.run([
                   'ffmpeg', '-y', '-i', temp_clip,
